@@ -14,13 +14,16 @@ from PIL import Image
 
 import kornia as K
 import kornia.feature as KF
-from kornia_moons.viz import draw_LAF_matches
+#from kornia_moons.viz import draw_LAF_matches
 import matplotlib.pyplot as plt
 
 from image_map import ImageData
 from image_map import ImageMap
 
-from raft import RAFT
+#from raft import RAFT
+import torchvision.transforms as T
+from torchvision.models.optical_flow import raft_large
+from torchvision.utils import flow_to_image
 from utils import flow_viz
 from utils.utils import InputPadder
 
@@ -168,11 +171,17 @@ def process(args):
     config.read(config_path)
     # get configuration
 
-    model = torch.nn.DataParallel(RAFT(args))
-    model.load_state_dict(torch.load(args.model))
-    model = model.module
-    model.to(DEVICE)
-    model.eval()
+    model = raft_large(pretrained=True)
+    model = model.eval()
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = model.to(device)
+
+    #model = torch.nn.DataParallel(RAFT(args))
+    #model.load_state_dict(torch.load(args.model))
+    #model = model.module
+    #model.to(DEVICE)
+    #model.eval()
     # set up the model
 
     image_map = ImageMap()
@@ -253,8 +262,11 @@ def process(args):
         subimage0_gpu, subimage1_gpu = padder.pad(subimage0_gpu, subimage1_gpu)
         # pad the images
 
-        flow_low, flow_up = model(subimage0_gpu, subimage1_gpu, iters=20, test_mode=True)
+        with torch.no_grad():
+            flow_up = model(subimage0_gpu, subimage1_gpu)[-1]
+        #flow_low, flow_up = model(subimage0_gpu, subimage1_gpu)
         flow_np = flow_up.squeeze(0).permute(1, 2, 0).detach().cpu().numpy()
+        #flow_np = flow_to_image(flow_up).cpu().numpy()
         # compute optical flow
 
         weight_array = np.zeros((subimage0.shape[0], subimage0.shape[1]), dtype=np.float32)
@@ -315,3 +327,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     process(args)
+
