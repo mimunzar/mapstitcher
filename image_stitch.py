@@ -5,18 +5,18 @@ import argparse
 class ImageStitcher:
     debug = True
 
-    def __init__(self, image1, image2, homography_matrix):
+    def __init__(self, image1, image2, H):
         """
         Initializes the ImageStitcher with two images and a homography matrix.
         
         Parameters:
         image1 (numpy array): The first image to be stitched.
         image2 (numpy array): The second image to be stitched.
-        homography_matrix (numpy array): The homography matrix that transforms image2 into the perspective of image1.
+        H (numpy array): The homography matrix that transforms image2 into the perspective of image1.
         """
         self.image1 = image1
         self.image2 = image2
-        self.homography_matrix = homography_matrix
+        self.H = H
 
     def find_intersection(self):
         """
@@ -31,7 +31,7 @@ class ImageStitcher:
         corners2 = np.array([[0, 0, 1], [self.image2.shape[1], 0, 1], [self.image2.shape[1], self.image2.shape[0], 1], [0, self.image2.shape[0], 1]]) 
         # corner coordinates of image2
 
-        corners2 = corners2 @ self.homography_matrix.T
+        corners2 = corners2 @ self.H.T
         corners2 = corners2 / corners2[:, 2].reshape(-1, 1)
         # transform corners of image2 to image1's perspective
         corners1 = corners1[:, :2] / corners1[:, 2, np.newaxis]
@@ -129,9 +129,9 @@ def parse_args():
     Dummy function to parse command line arguments.
     """
     parser = argparse.ArgumentParser(description="Image Stitcher")
-    parser.add_argument('--img0', required=True, help="Path to the first image")
-    parser.add_argument('--img1', required=True, help="Path to the second image")
-    parser.add_argument('--homography', required=True, help="Path to the homography matrix in .npy format")
+    parser.add_argument('--img1', required=True, help="Path to the first image")
+    parser.add_argument('--img2', required=True, help="Path to the second image")
+    parser.add_argument('--H', required=True, help="Path to the homography matrix in .npy format")
     return parser.parse_args()
 
 def main():
@@ -141,21 +141,21 @@ def main():
     args = parse_args()
     
     # Load images
-    img0 = cv2.imread(args.img0)
     img1 = cv2.imread(args.img1)
+    img2 = cv2.imread(args.img2)
     
-    if img0 is None or img1 is None:
+    if img1 is None or img2 is None:
         print("Error: One or both images could not be loaded.")
         sys.exit(1)
     
     # Load homography matrix
-    homography_matrix = np.load(args.homography)
+    H = np.load(args.H)
     
     # Initialize the ImageStitcher
-    stitcher = ImageStitcher(img0, img1, homography_matrix)
+    stitcher = ImageStitcher(img1, img2, H)
     
     # Perform the stitching
-    patch_size = (512, 512)  # Example patch size, you can adjust this
+    patch_size = (512, 512)  # Example patch size
     final_image = stitcher.stitch(patch_size)
     
     # Save or display the final stitched image
