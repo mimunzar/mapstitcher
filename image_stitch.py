@@ -5,17 +5,9 @@ import configparser
 import argparse
 import os
 import cv2
-import glob
-import math
 import numpy as np
-import torch
-import torch.nn.functional as F
-from PIL import Image
-
-import kornia as K
-import kornia.feature as KF
-#from kornia_moons.viz import draw_LAF_matches
-import matplotlib.pyplot as plt
+from numpy.linalg import inv
+import torch; torch.set_grad_enabled(False)
 
 from image_map import ImageData
 from image_map import ImageMap
@@ -25,18 +17,10 @@ import torchvision.transforms as T
 from torchvision.models.optical_flow import raft_large
 from torchvision.utils import flow_to_image
 # from utils import flow_viz
-# from utils.utils import InputPadder
+from utils import InputPadder
 
 DEVICE = 'cuda'
 
-def get_files(directory, wildcard, sort = True):
-    pattern = os.path.join(directory, wildcard)
-    files = glob.glob(pattern)
-    
-    if sort:
-        files.sort()
-
-    return files
 
 def img_CV_Color_to_GPU(img):
         img = np.array(img).astype(np.uint8)
@@ -62,55 +46,39 @@ def get_intersection(bb1, bb2):
         return None
     # No intersection
 
-def match_images_LoFTR(img0, img1, draw_matches = True):
-    matcher = KF.LoFTR(pretrained="outdoor")
-    # create the LoFTR matcher
-
-    img0_color = img0.get_image('cv')
-    img1_color = img1.get_image('cv')
-    img0_gpu = img0.get_image('gpu-gray')
-    img1_gpu = img1.get_image('gpu-gray')
-
-    print('Img0 shape:', img0_gpu.shape)
-    print('Img1 shape:', img1_gpu.shape)
-
-    input_dict = {
-        "image0": img0_gpu,
-        "image1": img1_gpu,
-    }
-    # prepare the input dictionary
-
-    with torch.inference_mode():
-        correspondences = matcher(input_dict)
-    # matching
-
-    mkpts0 = correspondences["keypoints0"].cpu().numpy()
-    mkpts1 = correspondences["keypoints1"].cpu().numpy()
-    print('Keypoints img0:', len(mkpts0))
-    print('Keypoints img1:', len(mkpts1))
-    # get the keypoints
-
-    H, inlier_mask = cv2.findHomography(mkpts0, mkpts1, cv2.RANSAC, 4.0)
-    print('Homography:\n', H)
-    # CV homography
-
-    if draw_matches:
-        h, w, _   =  [min(x) for x in zip(img0_color.shape, img1_color.shape)]
-        composite = np.hstack([
-            cv2.resize(img0_color, [w, h]),
-            cv2.resize(img1_color, [w, h])])
-        for i, color in enumerate([[0, 0, 255], [0, 255, 0]]):
-            points0 = mkpts0[i == inlier_mask.flatten()].astype(int)
-            points1 = mkpts1[i == inlier_mask.flatten()].astype(int) + [w, 0]
-            for x, y in zip(points0, points1):
-                cv2.circle(composite, x, 2, color, -1)
-                cv2.circle(composite, y, 2, color, -1)
-                cv2.line  (composite, x, y, color,  1)
-        cv2.imshow('Matches between Images', composite)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-
-    return H
+def make_compute_homography(draw_matches):
+    from kornia.feature import LoFTR
+    aLoFTR = LoFTR(pretrained = "outdoor")
+    aLoFTR.eval()
+    @torch.inference_mode
+    def compute_homography(img0, img1):
+        correspondences = aLoFTR({
+            'image0': img0.get_image('gpu-gray'),
+            'image1': img1.get_image('gpu-gray')})
+        keypoints0     = correspondences['keypoints0'].cpu().numpy()
+        keypoints1     = correspondences['keypoints1'].cpu().numpy()
+        H, inlier_mask = cv2.findHomography(keypoints0, keypoints1, cv2.RANSAC, 4.0)
+        print('Keypoints img0, img1:', len(keypoints0), len(keypoints1))
+        print('Homography:\n', H)
+        if draw_matches:
+            img0_color = img0.get_image('cv')
+            img1_color = img1.get_image('cv')
+            h, w, _    = [min(x) for x in zip(img0_color.shape, img1_color.shape)]
+            composite  = np.hstack([
+                cv2.resize(img0_color, [w, h]),
+                cv2.resize(img1_color, [w, h])])
+            for i, color in enumerate([[0, 0, 255], [0, 255, 0]]):
+                points0 = keypoints0[i == inlier_mask.flatten()].astype(int)
+                points1 = keypoints1[i == inlier_mask.flatten()].astype(int) + [w, 0]
+                for x, y in zip(points0, points1):
+                    cv2.circle(composite, x, 2, color, -1)
+                    cv2.circle(composite, y, 2, color, -1)
+                    cv2.line  (composite, x, y, color,  1)
+            cv2.imshow('Matches between Images', composite)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+        return H
+    return compute_homography
 
 
 def create_superimage(images, homographies, blending = 0.5):
@@ -154,48 +122,35 @@ def create_superimage(images, homographies, blending = 0.5):
 
     return superimage
 
+
+def glob(root_dir, pattern):
+    from os.path import join
+    from glob    import glob
+    return [join(root_dir, p) for p in glob(pattern, root_dir = root_dir, recursive = True)]
+
+
 def process(args):
-    config_path = get_files(args.image_data, "*.ini")[0]
+    config_path = glob(args.image_data, "*.ini")[0]
     config = configparser.ConfigParser()
     config.read(config_path)
     # get configuration
 
-    model = raft_large(pretrained=True)
-    model = model.eval()
+    model = raft_large(pretrained=True).to('cuda' if torch.cuda.is_available() else 'cpu')
+    model.eval()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)
-
-    #model = torch.nn.DataParallel(RAFT(args))
-    #model.load_state_dict(torch.load(args.model))
-    #model = model.module
-    #model.to(DEVICE)
-    #model.eval()
-    # set up the model
-
-    image_map = ImageMap()
-    # create the image map
-
-    image_list = get_files(args.image_data, "*.jpg")
-    # get the list of images
-
+    image_map   = ImageMap()
+    image_list  = sorted(glob(args.image_data, "*.jpg"))
     image_count = len(image_list) if config.getint('LoFTR', 'image_count') == -1 else config.getint('LoFTR', 'image_count')
     for i in range(len(image_list)):
         image_map.load_image(image_list[i], config.getint('LoFTR', 'subsample'))
         if(image_count != -1 and i >= image_count - 1):
             break
 
+    compute_homography = make_compute_homography(draw_matches = True)
     for i in range(image_map.get_image_count() - 1):
-        img0 = image_map.get_image_data()[i]
-        img1 = image_map.get_image_data()[i + 1]
-        # load images
-
-        H = match_images_LoFTR(img0, img1, True)
-        H = np.linalg.inv(H)
-
-        # match images
-        img1.H = np.matmul(H, img0.H)
-        # update homography
+        img0   = image_map.get_image_data()[i]
+        img1   = image_map.get_image_data()[i + 1]
+        img1.H = inv(compute_homography(img0, img1)) @ img0.H # Inverse for Reverse Transformation
     # todo: smarter way to match images
     # todo: oprimize homographies using graph optimization
 
