@@ -24,8 +24,8 @@ from image_map import ImageMap
 import torchvision.transforms as T
 from torchvision.models.optical_flow import raft_large
 from torchvision.utils import flow_to_image
-from utils import flow_viz
-from utils.utils import InputPadder
+# from utils import flow_viz
+# from utils.utils import InputPadder
 
 DEVICE = 'cuda'
 
@@ -71,8 +71,8 @@ def match_images_LoFTR(img0, img1, draw_matches = True):
     img0_gpu = img0.get_image('gpu-gray')
     img1_gpu = img1.get_image('gpu-gray')
 
-    print(img0_gpu.shape)
-    print(img1_gpu.shape)
+    print('Img0 shape:', img0_gpu.shape)
+    print('Img1 shape:', img1_gpu.shape)
 
     input_dict = {
         "image0": img0_gpu,
@@ -83,46 +83,35 @@ def match_images_LoFTR(img0, img1, draw_matches = True):
     with torch.inference_mode():
         correspondences = matcher(input_dict)
     # matching
-        
+
     mkpts0 = correspondences["keypoints0"].cpu().numpy()
     mkpts1 = correspondences["keypoints1"].cpu().numpy()
+    print('Keypoints img0:', len(mkpts0))
+    print('Keypoints img1:', len(mkpts1))
     # get the keypoints
-    H, inliers = cv2.findHomography(mkpts0, mkpts1, cv2.RANSAC, 4.0)
-    print(H)
+
+    H, inlier_mask = cv2.findHomography(mkpts0, mkpts1, cv2.RANSAC, 4.0)
+    print('Homography:\n', H)
     # CV homography
-    inliers = inliers > 0
-
-    img1_np = img0_color
-    img2_np = cv2.resize(img1_color, (img0_color.shape[1], img0_color.shape[0]))
-    # make the heights same
-
-    inliers_np = inliers
-    # convert inliers mask to numpy array
 
     if draw_matches:
-        composite_img = np.hstack((img1_np, img2_np))
-        # concatenate the two images horizontally
-
-        for i in range(len(inliers_np)):
-            if inliers_np[i]:
-                pt1 = tuple(mkpts0[i].astype(int))
-                pt2 = tuple((mkpts1[i] + np.array([img1_np.shape[1], 0])).astype(int))  # Adjust x-coordinate for img2
-                color = (0, 255, 0)  # Green for inliers
-            else:
-                pt1 = tuple(mkpts0[i].astype(int))
-                pt2 = tuple((mkpts1[i] + np.array([img1_np.shape[1], 0])).astype(int))  # Adjust x-coordinate for img2
-                color = (0, 0, 255)  # Red for outliers
-            cv2.circle(composite_img, pt1, 2, color, -1)
-            cv2.circle(composite_img, pt2, 2, color, -1)
-            cv2.line(composite_img, pt1, pt2, color, 1)
-        # draw matches on the composite image
-
-        cv2.imshow('Matches between Images', composite_img)
+        h, w, _   =  [min(x) for x in zip(img0_color.shape, img1_color.shape)]
+        composite = np.hstack([
+            cv2.resize(img0_color, [w, h]),
+            cv2.resize(img1_color, [w, h])])
+        for i, color in enumerate([[0, 0, 255], [0, 255, 0]]):
+            points0 = mkpts0[i == inlier_mask.flatten()].astype(int)
+            points1 = mkpts1[i == inlier_mask.flatten()].astype(int) + [w, 0]
+            for x, y in zip(points0, points1):
+                cv2.circle(composite, x, 2, color, -1)
+                cv2.circle(composite, y, 2, color, -1)
+                cv2.line  (composite, x, y, color,  1)
+        cv2.imshow('Matches between Images', composite)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
-        # visualize the matches
 
     return H
+
 
 def create_superimage(images, homographies, blending = 0.5):
     # Find the size of the output image
