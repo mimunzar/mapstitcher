@@ -22,8 +22,10 @@ class ImageStitcher:
         """
         Finds the intersection area of the two images using the homography matrix.
         
-        Returns:
+        Computes:
         intersection (tuple): The coordinates of the intersection area.
+        intersection_center (numpy array): The center of the intersection area.
+        intersection_normal (numpy array): The normal vector of the intersection area.
         """
 
         corners1 = np.array([[0, 0, 1], [self.image1.shape[1], 0, 1], [self.image1.shape[1], self.image1.shape[0], 1], [0, self.image1.shape[0], 1]]) 
@@ -33,41 +35,55 @@ class ImageStitcher:
 
         corners2 = corners2 @ self.H.T
         corners2 = corners2 / corners2[:, 2].reshape(-1, 1)
-        # transform corners of image2 to image1's perspective
+        # transform corners of image2 to image1 perspective
         corners1 = corners1[:, :2] / corners1[:, 2, np.newaxis]
         corners2 = corners2[:, :2] / corners2[:, 2, np.newaxis]
         # homogenous -> cartesian
 
         contour1 = np.array(corners1, dtype=np.float32).reshape((-1, 1, 2))
         contour2 = np.array(corners2, dtype=np.float32).reshape((-1, 1, 2))
-        # Convert corners to contours - cv2
+        # convert corners to contours - cv2
 
         intersection = cv2.intersectConvexConvex(contour1, contour2)
         if intersection[1] is None:
-            self.intersection = None
-        # Find the intersection of the two contours
+            intersection = None
+            intersection_center = None
+            intersection_normal = None
+            return intersection, intersection_center, intersection_normal
+        # find the intersection of the two contours
 
         intersection_points = intersection[1]
-        # Get the intersecting points
+        # get the intersecting points
+        intersection_center = np.mean(intersection_points, axis=0)[0]
+        # get intersection center
+        intersection_normal = np.mean(corners2, axis=0) - np.mean(corners1, axis=0)
+        magnitude = np.linalg.norm(intersection_normal)
+        if magnitude != 0:
+            intersection_normal /= magnitude
+        # get intersection normal
 
         x_min = np.min(intersection_points[:, 0, 0])
         y_min = np.min(intersection_points[:, 0, 1])
         x_max = np.max(intersection_points[:, 0, 0])
         y_max = np.max(intersection_points[:, 0, 1])
-        # Find the bounding box of the intersection points
+        # find the bounding box of the intersection points
 
-        self.intersection = (x_min, y_min, x_max, y_max)
+        intersection = (x_min, y_min, x_max, y_max)
         if ImageStitcher.debug:
-            print (self.intersection)
+            print (intersection)
+            print (intersection_center)
+            print (intersection_normal)
 
-        pass
+        return intersection, intersection_center, intersection_normal
 
-    def split_into_patches(self, intersection, patch_size):
+    def split_into_patches(self, intersection, intersection_center, intersection_normal, patch_size):
         """
         Splits the intersection area into smaller patches that can fit into GPU memory.
         
         Parameters:
         intersection (tuple): The coordinates of the intersection area.
+        intersection_center (numpy array): The center of the intersection area.
+        intersection_normal (numpy array): The normal vector of the intersection area.
         patch_size (tuple): The size of each patch.
         
         Returns:
@@ -118,8 +134,8 @@ class ImageStitcher:
         Returns:
         final_image (numpy array): The final stitched image.
         """
-        intersection = self.find_intersection()
-        patches = self.split_into_patches(intersection, patch_size)
+        intersection, intersection_center, intersection_normal = self.find_intersection()
+        patches = self.split_into_patches(intersection, intersection_center, intersection_normal, patch_size)
         processed_patches = self.process_patches(patches)
         final_image = self.stitch_images(processed_patches)
         return final_image
@@ -140,30 +156,30 @@ def main():
     """
     args = parse_args()
     
-    # Load images
     img1 = cv2.imread(args.img1)
     img2 = cv2.imread(args.img2)
+    # load images
     
     if img1 is None or img2 is None:
         print("Error: One or both images could not be loaded.")
         sys.exit(1)
     
-    # Load homography matrix
     H = np.load(args.H)
+    # load homography matrix
     
-    # Initialize the ImageStitcher
     stitcher = ImageStitcher(img1, img2, H)
-    
-    # Perform the stitching
+    # initialize the ImageStitcher
+
     patch_size = (512, 512)  # Example patch size
     final_image = stitcher.stitch(patch_size)
+    # perform the stitching
     
-    # Save or display the final stitched image
     if final_image is not None:
         cv2.imwrite('stitched_image.jpg', final_image)
         print("Stitched image saved as 'stitched_image.jpg'.")
     else:
         print("Error: Stitching failed.")
+    # save or display the final stitched image
 
 if __name__ == '__main__':
     main()
