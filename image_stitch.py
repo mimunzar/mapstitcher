@@ -1,7 +1,10 @@
 import numpy as np
 import cv2
+import argparse
 
 class ImageStitcher:
+    debug = True
+
     def __init__(self, image1, image2, homography_matrix):
         """
         Initializes the ImageStitcher with two images and a homography matrix.
@@ -22,6 +25,40 @@ class ImageStitcher:
         Returns:
         intersection (tuple): The coordinates of the intersection area.
         """
+
+        corners1 = np.array([[0, 0, 1], [self.image1.shape[1], 0, 1], [self.image1.shape[1], self.image1.shape[0], 1], [0, self.image1.shape[0], 1]]) 
+        # corner coordinates of image1
+        corners2 = np.array([[0, 0, 1], [self.image2.shape[1], 0, 1], [self.image2.shape[1], self.image2.shape[0], 1], [0, self.image2.shape[0], 1]]) 
+        # corner coordinates of image2
+
+        corners2 = corners2 @ self.homography_matrix.T
+        corners2 = corners2 / corners2[:, 2].reshape(-1, 1)
+        # transform corners of image2 to image1's perspective
+        corners1 = corners1[:, :2] / corners1[:, 2, np.newaxis]
+        corners2 = corners2[:, :2] / corners2[:, 2, np.newaxis]
+        # homogenous -> cartesian
+
+        contour1 = np.array(corners1, dtype=np.float32).reshape((-1, 1, 2))
+        contour2 = np.array(corners2, dtype=np.float32).reshape((-1, 1, 2))
+        # Convert corners to contours - cv2
+
+        intersection = cv2.intersectConvexConvex(contour1, contour2)
+        if intersection[1] is None:
+            self.intersection = None
+        # Find the intersection of the two contours
+
+        intersection_points = intersection[1]
+        # Get the intersecting points
+
+        x_min = np.min(intersection_points[:, 0, 0])
+        y_min = np.min(intersection_points[:, 0, 1])
+        x_max = np.max(intersection_points[:, 0, 0])
+        y_max = np.max(intersection_points[:, 0, 1])
+        # Find the bounding box of the intersection points
+
+        self.intersection = (x_min, y_min, x_max, y_max)
+        if ImageStitcher.debug:
+            print (self.intersection)
 
         pass
 
@@ -86,3 +123,47 @@ class ImageStitcher:
         processed_patches = self.process_patches(patches)
         final_image = self.stitch_images(processed_patches)
         return final_image
+    
+def parse_args():
+    """
+    Dummy function to parse command line arguments.
+    """
+    parser = argparse.ArgumentParser(description="Image Stitcher")
+    parser.add_argument('--img0', required=True, help="Path to the first image")
+    parser.add_argument('--img1', required=True, help="Path to the second image")
+    parser.add_argument('--homography', required=True, help="Path to the homography matrix in .npy format")
+    return parser.parse_args()
+
+def main():
+    """
+    Dummy main function to test the ImageStitcher class.
+    """
+    args = parse_args()
+    
+    # Load images
+    img0 = cv2.imread(args.img0)
+    img1 = cv2.imread(args.img1)
+    
+    if img0 is None or img1 is None:
+        print("Error: One or both images could not be loaded.")
+        sys.exit(1)
+    
+    # Load homography matrix
+    homography_matrix = np.load(args.homography)
+    
+    # Initialize the ImageStitcher
+    stitcher = ImageStitcher(img0, img1, homography_matrix)
+    
+    # Perform the stitching
+    patch_size = (512, 512)  # Example patch size, you can adjust this
+    final_image = stitcher.stitch(patch_size)
+    
+    # Save or display the final stitched image
+    if final_image is not None:
+        cv2.imwrite('stitched_image.jpg', final_image)
+        print("Stitched image saved as 'stitched_image.jpg'.")
+    else:
+        print("Error: Stitching failed.")
+
+if __name__ == '__main__':
+    main()
