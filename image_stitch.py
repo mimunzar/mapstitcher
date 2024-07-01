@@ -19,6 +19,8 @@ from torchvision.utils import flow_to_image
 # from utils import flow_viz
 from utils import InputPadder
 
+import new
+
 DEVICE = 'cuda'
 
 
@@ -45,40 +47,6 @@ def get_intersection(bb1, bb2):
     else:
         return None
     # No intersection
-
-def make_compute_homography(draw_matches):
-    from kornia.feature import LoFTR
-    aLoFTR = LoFTR(pretrained = "outdoor")
-    aLoFTR.eval()
-    @torch.inference_mode
-    def compute_homography(img0, img1):
-        correspondences = aLoFTR({
-            'image0': img0.get_image('gpu-gray'),
-            'image1': img1.get_image('gpu-gray')})
-        keypoints0     = correspondences['keypoints0'].cpu().numpy()
-        keypoints1     = correspondences['keypoints1'].cpu().numpy()
-        H, inlier_mask = cv2.findHomography(keypoints0, keypoints1, cv2.RANSAC, 4.0)
-        print('Keypoints img0, img1:', len(keypoints0), len(keypoints1))
-        print('Homography:\n', H)
-        if draw_matches:
-            img0_color = img0.get_image('cv')
-            img1_color = img1.get_image('cv')
-            h, w, _    = [min(x) for x in zip(img0_color.shape, img1_color.shape)]
-            composite  = np.hstack([
-                cv2.resize(img0_color, [w, h]),
-                cv2.resize(img1_color, [w, h])])
-            for i, color in enumerate([[0, 0, 255], [0, 255, 0]]):
-                points0 = keypoints0[i == inlier_mask.flatten()].astype(int)
-                points1 = keypoints1[i == inlier_mask.flatten()].astype(int) + [w, 0]
-                for x, y in zip(points0, points1):
-                    cv2.circle(composite, x, 2, color, -1)
-                    cv2.circle(composite, y, 2, color, -1)
-                    cv2.line  (composite, x, y, color,  1)
-            cv2.imshow('Matches between Images', composite)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-        return H
-    return compute_homography
 
 
 def create_superimage(images, homographies, blending = 0.5):
@@ -146,11 +114,16 @@ def process(args):
         if(image_count != -1 and i >= image_count - 1):
             break
 
-    compute_homography = make_compute_homography(draw_matches = True)
+    read_image = new.compose([
+        new.make_read_image(),
+        new.make_resize_image(500),
+        new.make_square_pad  (500)])
+    compute_homography = new.make_compute_homography('cuda', False)
     for i in range(image_map.get_image_count() - 1):
-        img0   = image_map.get_image_data()[i]
-        img1   = image_map.get_image_data()[i + 1]
-        img1.H = inv(compute_homography(img0, img1)) @ img0.H # Inverse for Reverse Transformation
+        img0 = image_map.get_image_data()[i]
+        img1 = image_map.get_image_data()[i + 1]
+        H, _ = compute_homography(read_image(image_list[i]), read_image(image_list[i + 1]))
+        img1.H = inv(H) @ img0.H # Inverse for Reverse Transformation
     # todo: smarter way to match images
     # todo: oprimize homographies using graph optimization
 
