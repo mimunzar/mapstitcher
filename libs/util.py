@@ -1,51 +1,26 @@
-def compose(funs):
-    """Returns a function which is composition of given functions."""
-    funs = list(funs)
-    def compose_impl(x):
-        for f in funs:
-            x = f(x)
-        return x
-    return compose_impl
+from PIL.Image                         import open
+from torchvision.transforms.functional import to_tensor
 
 
-def make_read_image():
+def read_image(path):
     """Returns a normalized image represented as [C, H, W] tensor."""
-    from PIL.Image                         import open
-    from torchvision.transforms.functional import to_tensor
-    def read_image(path):
-        with open(path) as im:
-            return to_tensor(im.convert('RGB'))
-    return read_image
+    with open(path) as im:
+        return to_tensor(im.convert('RGB'))
 
 
 def make_resize_image(max_size):
-    """Returns scaled image with a longer side of given size."""
     from torchvision.transforms.functional import resize
     from torchvision.transforms            import InterpolationMode
-    bilinear = InterpolationMode.BILINEAR
+    BILINEAR = InterpolationMode.BILINEAR
     def resize_image(image):
-        _, h, w = image.shape
-        longer  = max(h, w)
-        new_h   = round(max_size * h / longer)
-        new_w   = round(max_size * w / longer)
-        return resize(img           = image,
-                      size          = [new_h, new_w],
+        _, h, w   = image.shape
+        scale     = max_size / max(h, w)
+        return [resize(img           = image,
+                      size          = [round(scale * h), round(scale * w)],
                       antialias     = True,
-                      interpolation = bilinear)
+                      interpolation = BILINEAR),
+                scale]
     return resize_image
-
-
-def make_square_pad(max_size):
-    """Returns an square image padded with black borders."""
-    from torch import zeros
-    def square_pad(image):
-        c, h, w = image.shape
-        y       = round((max_size - h) / 2)
-        x       = round((max_size - w) / 2)
-        result  = zeros([c, max_size, max_size])
-        result[:, y:(y + h), x:(x + w)] = image
-        return result
-    return square_pad
 
 
 def warp_image(image, H):
