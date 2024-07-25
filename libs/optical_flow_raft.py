@@ -29,10 +29,10 @@ class OpticalFlow_RAFT:
         Processes the images to extract the optical flow.
         """
 
-        patch1_list_py = [torch.from_numpy(img).permute(2, 0, 1).float() for img in image_list1]
-        patch2_list_py = [torch.from_numpy(img).permute(2, 0, 1).float() for img in image_list2]
-        img1_batch = torch.stack(patch1_list_py)
-        img2_batch = torch.stack(patch2_list_py)
+        #patch1_list_py = [torch.from_numpy(img).permute(2, 0, 1).float() for img in image_list1]
+        #patch2_list_py = [torch.from_numpy(img).permute(2, 0, 1).float() for img in image_list2]
+        img1_batch = torch.stack(image_list1)
+        img2_batch = torch.stack(image_list2)
         # convert images to pytorch tensors
 
         img1_batch = F.resize(img1_batch, size=[256, 256], antialias=False)
@@ -42,15 +42,16 @@ class OpticalFlow_RAFT:
 
         list_of_flows = self.model(img1_batch.to(self.device), img2_batch.to(self.device))
 
-        predicted_flows = list_of_flows[-1]
+        flow_tensors = [flow for flow in list_of_flows[-1]]
+        flow_batch = torch.stack(flow_tensors)
 
         if self.debug:
-            flow_imgs = flow_to_image(predicted_flows)
+            flow_imgs = flow_to_image(flow_batch)
             img1_batch = [(img1 + 1) / 2 for img1 in img1_batch]
             grid = [[img1, flow_img] for (img1, flow_img) in zip(img1_batch, flow_imgs)]
             self.plot(grid)
 
-        return predicted_flows
+        return flow_batch
     
     def plot(self, imgs, **imshow_kwargs):
         if not isinstance(imgs[0], list):

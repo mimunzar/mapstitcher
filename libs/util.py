@@ -71,4 +71,3 @@ def make_line_between_axes(figure, src_axes, dst_axes):
             xyA = xy0, coordsA = src_transform,
             xyB = xy1, coordsB = dst_transform, color = color))
     return line_between_axes
-

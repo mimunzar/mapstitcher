@@ -7,7 +7,7 @@ import torchvision.transforms.functional as F
 import matplotlib.pyplot as plt
 
 class OpticalFlow_CV:
-    debug = False
+    debug = True
 
     def __init__(self):
         """
@@ -38,11 +38,11 @@ class OpticalFlow_CV:
             # Convert images to grayscale
             gray0 = cv2.cvtColor(img0, cv2.COLOR_BGR2GRAY)
             gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
-            
             # Compute dense optical flow using Farneback method
             flow = cv2.calcOpticalFlowFarneback(gray0, gray1, None, 
                                                 pyr_scale=0.5, levels=3, winsize=15, 
                                                 iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
+            #print(max(flow.flatten()), min(flow.flatten()))
             optical_flows.append(flow)
 
         flow_tensors = [torch.from_numpy(flow).permute(2, 0, 1) for flow in optical_flows]
@@ -56,7 +56,7 @@ class OpticalFlow_CV:
             grid = [[img1, flow_img] for (img1, flow_img) in zip(img1_batch, flow_imgs)]
             self.plot(grid)
         
-        return flow_batch
+        return optical_flows#flow_batch
     
     def plot(self, imgs, **imshow_kwargs):
         if not isinstance(imgs[0], list):

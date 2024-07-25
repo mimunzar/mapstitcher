@@ -5,14 +5,46 @@ import math
 
 import torch
 import torchvision.transforms.functional as F
+import torch.nn.functional as F2
 import torchvision.transforms as T
 from torchvision.models.optical_flow import raft_large
 from torchvision.models.optical_flow import Raft_Large_Weights
 from torchvision.utils import flow_to_image
 import matplotlib.pyplot as plt
 
-from optical_flow_raft import OpticalFlow_RAFT
-from optical_flow_cv import OpticalFlow_CV
+from libs.optical_flow_raft import OpticalFlow_RAFT
+from libs.optical_flow_cv_new import OpticalFlow_CV
+
+from libs.util import *
+
+def create_composite_image(img1, img2, point, normal):
+    """
+    Create a composite image with img1 on one side of the line and img2 on the other side.
+
+    Args:
+    img1 (torch.Tensor): First image tensor of shape [C, H, W].
+    img2 (torch.Tensor): Second image tensor of shape [C, H, W].
+    point (tuple): A point on the line (x, y).
+    normal (tuple): The normal to the line (nx, ny).
+
+    Returns:
+    torch.Tensor: Composite image tensor of shape [C, H, W].
+    """
+    from torch import meshgrid
+    from torch import arange
+    from torch import where
+    assert img1.shape == img2.shape, "Images must have the same size"
+    
+    height, width = img1.shape[1:]
+    y, x = meshgrid(arange(height, device=img1.device), arange(width, device=img1.device), indexing='ij')
+    
+    nx, ny = normal
+    px, py = point
+    
+    mask = (nx * (x - px) + ny * (y - py)) < 0
+    composite_image = where(mask.unsqueeze(0), img1, img2)
+    
+    return composite_image
 
 class ImageStitcher:
     debug = True
@@ -31,8 +63,8 @@ class ImageStitcher:
         self.H = H
         self.x_dominant = True
 
-        #self.flow_estimator = OpticalFlow_RAFT()
-        self.flow_estimator = OpticalFlow_CV()
+        self.flow_estimator = OpticalFlow_RAFT()
+        #self.flow_estimator = OpticalFlow_CV()
 
     def find_intersection(self):
         """
@@ -43,10 +75,9 @@ class ImageStitcher:
         intersection_center (numpy array): The center of the intersection area.
         intersection_normal (numpy array): The normal vector of the intersection area.
         """
-
-        corners1 = np.array([[0, 0, 1], [self.image1.shape[1], 0, 1], [self.image1.shape[1], self.image1.shape[0], 1], [0, self.image1.shape[0], 1]]) 
+        corners1 = np.array([[0, 0, 1], [self.image1.shape[2], 0, 1], [self.image1.shape[2], self.image1.shape[1], 1], [0, self.image1.shape[1], 1]]) 
         # corner coordinates of image1
-        corners2 = np.array([[0, 0, 1], [self.image2.shape[1], 0, 1], [self.image2.shape[1], self.image2.shape[0], 1], [0, self.image2.shape[0], 1]]) 
+        corners2 = np.array([[0, 0, 1], [self.image2.shape[2], 0, 1], [self.image2.shape[2], self.image2.shape[1], 1], [0, self.image2.shape[1], 1]]) 
         # corner coordinates of image2
 
         corners2 = corners2 @ self.H.T
@@ -56,6 +87,7 @@ class ImageStitcher:
         corners2 = corners2[:, :2] / corners2[:, 2, np.newaxis]
         # homogenous -> cartesian
 
+        self.final_image_dimensions = (int(max(np.max(corners1[:, 1]), np.max(corners2[:, 1]))), int(max(np.max(corners1[:, 0]), np.max(corners2[:, 0]))))
         self.final_image = np.zeros((int(max(np.max(corners1[:, 1]), np.max(corners2[:, 1]))), int(max(np.max(corners1[:, 0]), np.max(corners2[:, 0]))), 3), dtype=np.uint8)
         # todo: take into account negative X and Y after homography
         # create final image shape
@@ -89,6 +121,7 @@ class ImageStitcher:
         # find the bounding box of the intersection points
 
         intersection = (x_min, y_min, x_max, y_max)
+        print (intersection)
         if ImageStitcher.debug:
             print (intersection)
             print (intersection_center)
@@ -148,18 +181,17 @@ class ImageStitcher:
 
         print(intersection)
 
+        increment = (patch_width / 4) * 3 # 25% overlap
         if(x_dominant):
-            for i in range(math.ceil((x_max - x_min) / patch_width)):
-                x = x_min + i * patch_width
+            for i in range(math.ceil((x_max - x_min) / increment)):
+                x = x_min + i * increment
                 y = y0 + (x - x0) * dy / dx
-                #patch = (x, y - patch_height / 2, min(x + patch_width, x_max), y + patch_height / 2)
                 patch = (x, y - patch_height / 2, x + patch_width, x_max, y + patch_height / 2)
                 patches.append(patch)
         else:
-            for i in range(math.ceil((y_max - y_min) / patch_height)):
-                y = y_min + i * patch_height
+            for i in range(math.ceil((y_max - y_min) / increment)):
+                y = y_min + i * increment
                 x = x0 + (y - y0) * dx / dy
-                #patch = (x - patch_width / 2, y, x + patch_width / 2, min(y + patch_height, y_max))
                 patch = (x - patch_width / 2, y, x + patch_width / 2, y + patch_height)
                 patches.append(patch)
         # find intersection of intersection area and line given by centroid and normal
@@ -169,25 +201,37 @@ class ImageStitcher:
         return patches
 
     def get_padded_patch(self, image, patch):
+        """
+        Extracts a padded patch from the given image tensor.
+        
+        Args:
+        image (torch.Tensor): The input image tensor of shape [C, H, W].
+        patch (tuple): The patch coordinates (x_min, y_min, x_max, y_max).
+        
+        Returns:
+        torch.Tensor: The extracted patch tensor of shape [C, H_patch, W_patch].
+        """
         x_min, y_min, x_max, y_max = patch
 
-        # Calculate the padding amounts
         pad_left = max(0, -x_min)
         pad_top = max(0, -y_min)
-        pad_right = max(0, x_max - image.shape[1])
-        pad_bottom = max(0, y_max - image.shape[0])
+        pad_right = max(0, x_max - image.shape[2])
+        pad_bottom = max(0, y_max - image.shape[1])
+        # calculate the padding amounts
 
-        # Pad the image
-        padded_image = np.pad(image, ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)), mode='constant')
+        padding = (pad_left, pad_right, pad_top, pad_bottom)
+        padded_image = torch.nn.functional.pad(image, padding, mode='constant', value=0)
+        # pad the image
 
-        # Calculate new patch coordinates in the padded image
         x_min += pad_left
         y_min += pad_top
         x_max += pad_left
         y_max += pad_top
+        # calculate new patch coordinates in the padded image
 
-        # Extract the patch
-        patch_img = padded_image[y_min:y_max, x_min:x_max]
+        patch_img = padded_image[:, y_min:y_max, x_min:x_max]
+        # extract the patch
+
         return patch_img
 
     def process_patches(self, patches, intersection_normal):
@@ -214,7 +258,6 @@ class ImageStitcher:
 
             patch1_img = self.get_padded_patch(self.image1, patch1)
             patch2_img = self.get_padded_patch(self.image2, patch2)
-            print(patch1_img.shape, patch2_img.shape)
             # extract image patches
 
             patch1_list.append(patch1_img)
@@ -224,114 +267,129 @@ class ImageStitcher:
         # get optical flow between patches
 
         for i, (patch1, patch2) in enumerate(zip(patch1_list, patch2_list)):
-            flow_np = predicted_flows[i].squeeze(0).permute(1, 2, 0).detach().cpu().numpy()
+            flow = predicted_flows[i].squeeze(0).to(patch1.device)  # Flow tensor [2, H, W]
 
-            weight_array = np.zeros((patch1.shape[0], patch1.shape[1]), dtype=np.float32)
+            weight_array = torch.zeros(patch1.shape[1], patch1.shape[2], dtype=torch.float32, device=patch1.device)
             for y in range(weight_array.shape[0]):
                 for x in range(weight_array.shape[1]):
+                    #weight_intersection = (intersection_normal[0] * (x - weight_array.shape[1] / 2 + 0.5) + 
+                    #                       intersection_normal[1] * (y - weight_array.shape[0] / 2 + 0.5)) / (weight_array.shape[1] / 2)
+                    #weight_circle = 1 - math.sqrt((x - weight_array.shape[1] / 2 + 0.5) ** 2 + (y - weight_array.shape[0] / 2 + 0.5) ** 2) / (weight_array.shape[1] / 2) 
                     weight_array[y, x] = intersection_normal[0] * (x - weight_array.shape[1] / 2 + 0.5) + intersection_normal[1] * (y - weight_array.shape[0] / 2 + 0.5)
+                    #weight_array[y, x] = min(max((intersection_normal[0] * (x - weight_array.shape[1] / 2 + 0.5) + 
+                    #                              intersection_normal[1] * (y - weight_array.shape[0] / 2 + 0.5)) / (weight_array.shape[1] / 2), 0), 1)
+                    #if(weight_intersection > 0):
+                    #    weight_array[y, x] = min(max(weight_circle * weight_intersection, 0), 1)
+                    #else:
+                    #    weight_array[y, x] = min(max(1 - weight_circle * abs(weight_intersection), 0), 1)
+            # Create weight array
 
-            # create weight array
-            max_value = np.max(weight_array)
-            min_value = np.min(weight_array)
+            max_value = weight_array.max()
+            min_value = weight_array.min()
             weight_array = (weight_array - min_value) / (max_value - min_value)
-            # normalize weight array
+            print(weight_array)
+            # Normalize weight array
 
-            flow_x = flow_np[..., 0]
-            flow_y = flow_np[..., 1]
-            # get flow x and y
-            for y in range(flow_x.shape[0]):
-                for x in range(flow_x.shape[1]):
-                    flow_x[y, x] = flow_x[y, x] * (1 - weight_array[y, x])
-                    flow_y[y, x] = flow_y[y, x] * (1 - weight_array[y, x])
-            # create flow gradient, so warped image ties to source image
-            x, y = np.meshgrid(np.arange(flow_np.shape[1]), np.arange(flow_np.shape[0]))
-            new_x = x + flow_x
-            new_y = y + flow_y
-            #patch2_wrap = cv2.remap(patch2, new_x.astype(np.float32), new_y.astype(np.float32), interpolation=cv2.INTER_LINEAR)
-            patch2_wrap = cv2.remap(patch2, new_x.astype(np.float32), new_y.astype(np.float32), interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
-            # create warped image
-            valid_mask = (new_x >= 0) & (new_x < patch2.shape[1]) & (new_y >= 0) & (new_y < patch2.shape[0])
-            # create mask
+            flow_x = flow[1] * (1 - weight_array)
+            flow_y = flow[0] * (1 - weight_array)
+            # Modify flow with weight array # !!!!!! opencv uses x, y coordinates, pytorch uses y, x coordinates !!!
 
-            blended = [patch2_wrap, valid_mask]
-            #blended = np.array(patch1)
-            #for y in range(weight_array.shape[0]):
-            #    for x in range(weight_array.shape[1]):
-            #        blended[y, x] = patch1[y, x] * (1 - weight_array[y, x]) + patch2_wrap[y, x] * weight_array[y, x]
-            # create blended image
+            h, w = weight_array.shape
+            grid_x, grid_y = torch.meshgrid(torch.arange(h, device=patch1.device), torch.arange(w, device=patch1.device), indexing='ij')
+            grid_x = grid_x.float()
+            grid_y = grid_y.float()
+            # Create meshgrid
 
-            processed_patches.append(blended)
+            new_x = grid_x + flow_x
+            new_y = grid_y + flow_y
+            # Calculate new grid positions
 
-            #cv2.imshow('patch1', patch1)
-            #cv2.imshow('patch2', patch2)
-            #cv2.imshow('patch2_wrap', patch2_wrap)
-            #cv2.imshow('blended', blended)
-            #cv2.waitKey(0)
+            new_x = 2 * new_x / (w - 1) - 1
+            new_y = 2 * new_y / (h - 1) - 1
+            # Normalize grid positions to the range [-1, 1]
+
+            grid = torch.stack((new_y, new_x), dim=-1).unsqueeze(0)
+            # Stack and permute to get grid [H, W, 2]
+
+            
+            patch2 = patch2.unsqueeze(0)  # Add batch dimension
+            patch2_wrap = F2.grid_sample(patch2, grid, mode='bilinear', padding_mode='zeros', align_corners=True).squeeze(0)
+            # Warp patch2 using grid_sample
+            
+            cv2.imshow('im1', (patch1.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
+            cv2.imshow('im2', (patch2.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
+            cv2.imshow('composite', (patch2_wrap.detach().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
+            cv2.waitKey(0)
+
+            valid_mask = (new_x >= -1) & (new_x <= 1) & (new_y >= -1) & (new_y <= 1)
+            # Create valid mask
+
+            processed_patches.append((patch2_wrap, valid_mask))
 
         return processed_patches
 
     def stitch_images(self, patches, processed_patches, intersection_center, intersection_normal):
         """
         Stitches the processed patches together to form the final stitched image.
-        
+
         Parameters:
-        patches (list): A list of patch positions
+        patches (list): A list of patch positions.
         processed_patches (list): A list of processed patches.
-        
+
         Returns:
-        final_image (numpy array): The final stitched image.
+        torch.Tensor: The final stitched image.
         """
-        final_image = None
 
-        # warp image 2 with homography
-        image1_warp = cv2.warpPerspective(self.image1, np.identity(3), (self.final_image.shape[1], self.final_image.shape[0]))
-        image2_warp = cv2.warpPerspective(self.image2, self.H, (self.final_image.shape[1], self.final_image.shape[0]))
-        # copy to self.final_image
-        self.final_image = self.create_composite_image(image1_warp, image2_warp, intersection_center, intersection_normal)
-        #cv2.imshow('w0', image1_warp)
-        #cv2.imshow('w1', image2_warp)
-        cv2.imshow('final', self.final_image)
-        cv2.waitKey(0)
-        for patch, [processed_patch, mask] in zip(patches, processed_patches):
-            print(patch)
-
+        identity_homography = torch.eye(3, device=self.image1.device)
+        homography_matrix = torch.tensor(self.H, device=self.image1.device, dtype=torch.float32)
+        
+        image1_warp = self.warp_image(self.image1, identity_homography, self.final_image_dimensions)
+        image2_warp = self.warp_image(self.image2, homography_matrix, self.final_image_dimensions)
+        # Warp image 1 with identity and image 2 with homography
+        
+        self.final_image = create_composite_image(image1_warp, image2_warp, intersection_center, intersection_normal)
+        # Create composite image
+        
+        for patch, (processed_patch, mask) in zip(patches, processed_patches):
             x_min, y_min, x_max, y_max = patch
-            h, w = processed_patch.shape[:2]
+            h, w = processed_patch.shape[1:]
+            
             x_min = int(x_min)
             y_min = int(y_min)
-            # get patch coordinates
-
+            
             roi_y1 = max(0, y_min)
-            roi_y2 = min(self.final_image.shape[0], y_min + h)
+            roi_y2 = min(self.final_image.shape[1], y_min + h)
             roi_x1 = max(0, x_min)
-            roi_x2 = min(self.final_image.shape[1], x_min + w)
-            # get roi coordinates
+            roi_x2 = min(self.final_image.shape[2], x_min + w)
+            # Calculate ROI coordinates
             
             patch_y1 = max(0, -y_min)
             patch_y2 = patch_y1 + (roi_y2 - roi_y1)
             patch_x1 = max(0, -x_min)
             patch_x2 = patch_x1 + (roi_x2 - roi_x1)
-            # get patch coordinates -> this whole ordeal is because of out-of-bounds copying
-
-            patch_transformed = processed_patch[patch_y1:patch_y2, patch_x1:patch_x2]
-            valid_mask = mask[patch_y1:patch_y2, patch_x1:patch_x2]
-            # get the transformed patch and mask
-
-            roi = self.final_image[roi_y1:roi_y2, roi_x1:roi_x2]
-            # get the roi from the final image
-
-            valid_mask_expanded = np.repeat(valid_mask[:, :, np.newaxis], 3, axis=2)
-            roi[valid_mask_expanded] = patch_transformed[valid_mask_expanded]
-            # copy the transformed patch to the roi
+            # Calculate patch coordinates
             
-            self.final_image[roi_y1:roi_y2, roi_x1:roi_x2] = roi
-            # copy processed patches to final image
-
-            cv2.imshow('final', self.final_image)
-            cv2.waitKey(0)
+            patch_transformed = processed_patch[:, patch_y1:patch_y2, patch_x1:patch_x2]
+            valid_mask = mask[patch_y1:patch_y2, patch_x1:patch_x2]
+            # Extract patch and mask
+            
+            roi = self.final_image[:, roi_y1:roi_y2, roi_x1:roi_x2]
+            # Get the ROI from the final image
+            
+            valid_mask_expanded = valid_mask.unsqueeze(0).expand_as(patch_transformed)
+            roi = torch.where(valid_mask_expanded, patch_transformed, roi)
+            # Apply valid mask and blend patches
+            
+            self.final_image[:, roi_y1:roi_y2, roi_x1:roi_x2] = roi
+            # Place the modified ROI back into the final image
         
-        return final_image
+            final_image_np = (self.final_image.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
+            # Convert final image back to NumPy for visualization if needed
+            
+            cv2.imshow('final', final_image_np)
+            cv2.waitKey(0)
+            
+        return self.final_image
 
     def stitch(self, patch_size):
         """
@@ -348,41 +406,47 @@ class ImageStitcher:
         processed_patches = self.process_patches(patches, intersection_normal)
         final_image = self.stitch_images(patches, processed_patches, intersection_center, intersection_normal)
         return final_image
-    
-    def create_composite_image(self, img1, img2, point, normal):
+
+    def warp_image(self, image, homography, out_dims):
         """
-        Create a composite image with img1 on one side of the line and img2 on the other side.
+        Warp image using a homography matrix with PyTorch.
 
         Args:
-        img1 (np.ndarray): First image.
-        img2 (np.ndarray): Second image.
-        point (tuple): A point on the line (x, y).
-        normal (tuple): The normal to the line (nx, ny).
+        image (torch.Tensor): Image tensor of shape [C, H, W].
+        homography (torch.Tensor): Homography matrix of shape [3, 3].
+        out_dims (tuple): Dimensions of the output image (H_out, W_out).
 
         Returns:
-        np.ndarray: Composite image.
+        torch.Tensor: Warped image tensor of shape [C, H_out, W_out].
         """
+        C, H, W = image.shape
+        H_out, W_out = out_dims
+
+        y_out, x_out = torch.meshgrid(torch.linspace(0, H_out - 1, H_out, device=image.device), 
+                                    torch.linspace(0, W_out - 1, W_out, device=image.device), indexing='ij')
+        ones_out = torch.ones_like(x_out)
+        grid_out = torch.stack([x_out, y_out, ones_out], dim=-1).view(-1, 3).t()  # Shape [3, H_out*W_out]
+        # create a meshgrid of coordinates in the output image
+
+        inv_homography = torch.inverse(homography)
+        original_grid = inv_homography @ grid_out
+        original_grid = original_grid[:2] / original_grid[2]  # normalize by the third coordinate
+        # apply the inverse homography to the output grid to get coordinates in the original image
+
+        original_grid = original_grid.t().view(H_out, W_out, 2)
+        original_grid = original_grid.permute(2, 0, 1).unsqueeze(0)  # Shape [1, 2, H_out, W_out]
+        # reshape back to the grid shape [H_out, W_out, 2]
+
+        original_grid[0, 0] = 2 * original_grid[0, 0] / (W - 1) - 1
+        original_grid[0, 1] = 2 * original_grid[0, 1] / (H - 1) - 1
+        original_grid = original_grid.permute(0, 2, 3, 1)  # Shape [1, H_out, W_out, 2]
+        # normalize grid coordinates to [-1, 1]
+
+        image = image.unsqueeze(0)  # Add batch dimension
+        warped_image = F2.grid_sample(image, original_grid, mode='bilinear', padding_mode='zeros', align_corners=True)
+        # warp the image using grid_sample
         
-        assert img1.shape == img2.shape, "Images must have the same size"
-        # assert
-        
-        height, width = img1.shape[:2]
-        # get dimensions
-
-        y, x = np.meshgrid(np.arange(height), np.arange(width), indexing='ij')
-        # create meshgrid
-
-        nx, ny = normal
-        px, py = point
-        # define line parameters
-
-        mask = (nx * (x - px) + ny * (y - py)) < 0
-        # create mask
-
-        composite_image = np.where(mask[..., None], img1, img2)
-        # Create the composite image
-
-        return composite_image
+        return warped_image.squeeze(0)
     
 def parse_args():
     """
@@ -394,19 +458,16 @@ def parse_args():
     parser.add_argument('--H', required=True, help="Path to the homography matrix in .npy format")
     return parser.parse_args()
 
-def main():
+if '__main__' == __name__:
     """
     Dummy main function to test the ImageStitcher class.
+    Run as python -m libs.image_stitch from a command line.
     """
     args = parse_args()
-    
-    img1 = cv2.imread(args.img1)
-    img2 = cv2.imread(args.img2)
+
+    img1 = make_read_image()(args.img1)
+    img2 = make_read_image()(args.img2)
     # load images
-    
-    if img1 is None or img2 is None:
-        print("Error: One or both images could not be loaded.")
-        sys.exit(1)
     
     H = np.load(args.H)
     # load homography matrix
@@ -419,11 +480,8 @@ def main():
     # perform the stitching
     
     if final_image is not None:
-        cv2.imwrite('stitched_image.jpg', final_image)
+        cv2.imwrite('stitched_image.jpg', (final_image.cpu().numpy() * 255).astype(np.uint8))
         print("Stitched image saved as 'stitched_image.jpg'.")
     else:
         print("Error: Stitching failed.")
     # save or display the final stitched image
-
-if __name__ == '__main__':
-    main()
