@@ -9,13 +9,12 @@ from torchvision.utils import flow_to_image
 import matplotlib.pyplot as plt
 
 class OpticalFlow_RAFT:
-    debug = True
-
-    def __init__(self):
+    def __init__(self, debug=False):
         """
         Initializes the OpticalFlow_RAFT class.
         """
 
+        self.debug = debug
         self.weights = Raft_Large_Weights.DEFAULT
         self.transforms = self.weights.transforms()
         self.model = raft_large(weights=self.weights)
@@ -29,8 +28,6 @@ class OpticalFlow_RAFT:
         Processes the images to extract the optical flow.
         """
 
-        #patch1_list_py = [torch.from_numpy(img).permute(2, 0, 1).float() for img in image_list1]
-        #patch2_list_py = [torch.from_numpy(img).permute(2, 0, 1).float() for img in image_list2]
         img1_batch = torch.stack(image_list1)
         img2_batch = torch.stack(image_list2)
         # convert images to pytorch tensors

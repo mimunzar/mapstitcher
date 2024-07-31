@@ -4,18 +4,12 @@ import argparse
 import math
 
 import torch
-import torchvision.transforms.functional as F
 import torch.nn.functional as F2
-import torchvision.transforms as T
-from torchvision.models.optical_flow import raft_large
-from torchvision.models.optical_flow import Raft_Large_Weights
-from torchvision.utils import flow_to_image
-import matplotlib.pyplot as plt
 
 from libs.optical_flow_raft import OpticalFlow_RAFT
-from libs.optical_flow_cv_new import OpticalFlow_CV
 
 from libs.util import *
+from libs.homography import *
 
 def create_composite_image(img1, img2, point, normal):
     """
@@ -47,9 +41,7 @@ def create_composite_image(img1, img2, point, normal):
     return composite_image
 
 class ImageStitcher:
-    debug = True
-
-    def __init__(self, image1, image2, H):
+    def __init__(self, image1, image2, H, debug=False):
         """
         Initializes the ImageStitcher with two images and a homography matrix.
         
@@ -62,8 +54,9 @@ class ImageStitcher:
         self.image2 = image2
         self.H = H
         self.x_dominant = True
+        self.debug = debug
 
-        self.flow_estimator = OpticalFlow_RAFT()
+        self.flow_estimator = OpticalFlow_RAFT(self.debug)
         #self.flow_estimator = OpticalFlow_CV()
 
     def find_intersection(self):
@@ -88,6 +81,7 @@ class ImageStitcher:
         # homogenous -> cartesian
 
         self.final_image_dimensions = (int(max(np.max(corners1[:, 1]), np.max(corners2[:, 1]))), int(max(np.max(corners1[:, 0]), np.max(corners2[:, 0]))))
+        # store final image dimensions according to the corners
         self.final_image = np.zeros((int(max(np.max(corners1[:, 1]), np.max(corners2[:, 1]))), int(max(np.max(corners1[:, 0]), np.max(corners2[:, 0]))), 3), dtype=np.uint8)
         # todo: take into account negative X and Y after homography
         # create final image shape
@@ -121,8 +115,7 @@ class ImageStitcher:
         # find the bounding box of the intersection points
 
         intersection = (x_min, y_min, x_max, y_max)
-        print (intersection)
-        if ImageStitcher.debug:
+        if self.debug:
             print (intersection)
             print (intersection_center)
             print (intersection_normal)
@@ -137,7 +130,7 @@ class ImageStitcher:
         intersection (tuple): The coordinates of the intersection area.
         intersection_center (numpy array): The center of the intersection area.
         intersection_normal (numpy array): The normal vector of the intersection area.
-        patch_size (tuple): The size of each patch.
+        patch_size (tuple): The size of each patch, overlap.
         
         Returns:
         patches (list): A list of smaller patches from the intersection area.
@@ -176,12 +169,11 @@ class ImageStitcher:
             x_dominant = False
 
         self.x_dominant = x_dominant
-        patch_width, patch_height = patch_size
+        patch_width, patch_height, overlap = patch_size
         # get patch width and height
 
-        print(intersection)
-
-        increment = (patch_width / 4) * 3 # 25% overlap
+        increment = abs((patch_width - overlap) * intersection_normal[1]) if x_dominant else abs((patch_height - overlap) * intersection_normal[0])
+        #increment = patch_width - overlap if x_dominant else patch_height - overlap
         if(x_dominant):
             for i in range(math.ceil((x_max - x_min) / increment)):
                 x = x_min + i * increment
@@ -195,8 +187,6 @@ class ImageStitcher:
                 patch = (x - patch_width / 2, y, x + patch_width / 2, y + patch_height)
                 patches.append(patch)
         # find intersection of intersection area and line given by centroid and normal
-
-        print(patches)
 
         return patches
 
@@ -234,7 +224,7 @@ class ImageStitcher:
 
         return patch_img
 
-    def process_patches(self, patches, intersection_normal):
+    def process_patches(self, patches, intersection_normal, patch_size):
         """
         Processes each patch using RAFT for detailed stitching.
         
@@ -266,28 +256,23 @@ class ImageStitcher:
         predicted_flows = self.flow_estimator.process_images(patch1_list, patch2_list)
         # get optical flow between patches
 
+        center_distance = patch_size[0] - patch_size[2]
+        limit = math.sqrt((patch_size[0] / 2) ** 2 - (center_distance / 2) ** 2)
+        # compute normalizing factor for the weights using circular mask and overlap value
+
         for i, (patch1, patch2) in enumerate(zip(patch1_list, patch2_list)):
             flow = predicted_flows[i].squeeze(0).to(patch1.device)  # Flow tensor [2, H, W]
 
             weight_array = torch.zeros(patch1.shape[1], patch1.shape[2], dtype=torch.float32, device=patch1.device)
             for y in range(weight_array.shape[0]):
                 for x in range(weight_array.shape[1]):
-                    #weight_intersection = (intersection_normal[0] * (x - weight_array.shape[1] / 2 + 0.5) + 
-                    #                       intersection_normal[1] * (y - weight_array.shape[0] / 2 + 0.5)) / (weight_array.shape[1] / 2)
-                    #weight_circle = 1 - math.sqrt((x - weight_array.shape[1] / 2 + 0.5) ** 2 + (y - weight_array.shape[0] / 2 + 0.5) ** 2) / (weight_array.shape[1] / 2) 
-                    weight_array[y, x] = intersection_normal[0] * (x - weight_array.shape[1] / 2 + 0.5) + intersection_normal[1] * (y - weight_array.shape[0] / 2 + 0.5)
-                    #weight_array[y, x] = min(max((intersection_normal[0] * (x - weight_array.shape[1] / 2 + 0.5) + 
-                    #                              intersection_normal[1] * (y - weight_array.shape[0] / 2 + 0.5)) / (weight_array.shape[1] / 2), 0), 1)
-                    #if(weight_intersection > 0):
-                    #    weight_array[y, x] = min(max(weight_circle * weight_intersection, 0), 1)
-                    #else:
-                    #    weight_array[y, x] = min(max(1 - weight_circle * abs(weight_intersection), 0), 1)
+                    #weight_array[y, x] = intersection_normal[0] * (x - weight_array.shape[1] / 2 + 0.5) + intersection_normal[1] * (y - weight_array.shape[0] / 2 + 0.5)
+                    weight_array[y, x] = min(max((intersection_normal[0] * (x - weight_array.shape[1] / 2 + 0.5) + intersection_normal[1] * (y - weight_array.shape[0] / 2 + 0.5)) / limit, -1), 1)
             # Create weight array
 
             max_value = weight_array.max()
             min_value = weight_array.min()
             weight_array = (weight_array - min_value) / (max_value - min_value)
-            print(weight_array)
             # Normalize weight array
 
             flow_x = flow[1] * (1 - weight_array)
@@ -316,10 +301,11 @@ class ImageStitcher:
             patch2_wrap = F2.grid_sample(patch2, grid, mode='bilinear', padding_mode='zeros', align_corners=True).squeeze(0)
             # Warp patch2 using grid_sample
             
-            cv2.imshow('im1', (patch1.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
-            cv2.imshow('im2', (patch2.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
-            cv2.imshow('composite', (patch2_wrap.detach().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
-            cv2.waitKey(0)
+            if self.debug:
+                cv2.imshow('im1', (patch1.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
+                cv2.imshow('im2', (patch2.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
+                cv2.imshow('composite', (patch2_wrap.detach().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
+                cv2.waitKey(0)
 
             valid_mask = (new_x >= -1) & (new_x <= 1) & (new_y >= -1) & (new_y <= 1)
             # Create valid mask
@@ -386,8 +372,9 @@ class ImageStitcher:
             final_image_np = (self.final_image.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
             # Convert final image back to NumPy for visualization if needed
             
-            cv2.imshow('final', final_image_np)
-            cv2.waitKey(0)
+            if self.debug:
+                cv2.imshow('final', final_image_np)
+                cv2.waitKey(0)
             
         return self.final_image
 
@@ -403,7 +390,7 @@ class ImageStitcher:
         """
         intersection, intersection_center, intersection_normal = self.find_intersection()
         patches = self.split_into_patches(intersection, intersection_center, intersection_normal, patch_size)
-        processed_patches = self.process_patches(patches, intersection_normal)
+        processed_patches = self.process_patches(patches, intersection_normal, patch_size)
         final_image = self.stitch_images(patches, processed_patches, intersection_center, intersection_normal)
         return final_image
 
@@ -455,32 +442,42 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Image Stitcher")
     parser.add_argument('--img1', required=True, help="Path to the first image")
     parser.add_argument('--img2', required=True, help="Path to the second image")
-    parser.add_argument('--H', required=True, help="Path to the homography matrix in .npy format")
+    #parser.add_argument('--H', required=True, help="Path to the homography matrix in .npy format")
     return parser.parse_args()
 
 if '__main__' == __name__:
     """
     Dummy main function to test the ImageStitcher class.
-    Run as python -m libs.image_stitch from a command line.
+    Run as python -m libs.image_stitch --img1 path --img2 path from a command line.
     """
     args = parse_args()
 
-    img1 = make_read_image()(args.img1)
-    img2 = make_read_image()(args.img2)
+    img1 = read_image(args.img1)
+    img2 = read_image(args.img2)
     # load images
+
+    from pprint import pprint
+    homography = make_homography_with_downscaling(**{  # Expects following argparse arguments.
+        'max_size': 1200, # Homography is computed on images of this size
+        'device'  : 'cuda',
+        'debug'   : False})
+    H_data = homography(
+                img1,
+                img2)
+
     
-    H = np.load(args.H)
+    H = np.linalg.inv(H_data[0])
     # load homography matrix
     
-    stitcher = ImageStitcher(img1, img2, H)
+    stitcher = ImageStitcher(img1, img2, H, True)
     # initialize the ImageStitcher
 
-    patch_size = (256, 256)  # Example patch size
+    patch_size = (256, 256, 128)  # Example patch size - width, height, overlap
     final_image = stitcher.stitch(patch_size)
     # perform the stitching
     
     if final_image is not None:
-        cv2.imwrite('stitched_image.jpg', (final_image.cpu().numpy() * 255).astype(np.uint8))
+        cv2.imwrite('stitched_image.jpg', (final_image.detach().cpu().numpy() * 255).astype(np.uint8))
         print("Stitched image saved as 'stitched_image.jpg'.")
     else:
         print("Error: Stitching failed.")
