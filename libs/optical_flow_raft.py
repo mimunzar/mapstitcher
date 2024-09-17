@@ -23,7 +23,7 @@ class OpticalFlow_RAFT:
         self.model = self.model.to(self.device)
         # load the RAFT model
 
-    def process_images(self, image_list1, image_list2):
+    def process_images(self, image_list1, image_list2, size):
         """
         Processes the images to extract the optical flow.
         """
@@ -32,8 +32,8 @@ class OpticalFlow_RAFT:
         img2_batch = torch.stack(image_list2)
         # convert images to pytorch tensors
 
-        img1_batch = F.resize(img1_batch, size=[256, 256], antialias=False)
-        img2_batch = F.resize(img2_batch, size=[256, 256], antialias=False)
+        img1_batch = F.resize(img1_batch, size, antialias=False)
+        img2_batch = F.resize(img2_batch, size, antialias=False)
         img1_batch, img2_batch = self.transforms(img1_batch, img2_batch)
         # preprocess the images, todo: patch size
 

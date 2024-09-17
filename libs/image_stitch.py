@@ -11,6 +11,8 @@ from libs.optical_flow_raft import OpticalFlow_RAFT
 from libs.util import *
 from libs.homography import *
 
+import matplotlib.pyplot as plt
+
 def create_composite_image(img1, img2, point, normal):
     """
     Create a composite image with img1 on one side of the line and img2 on the other side.
@@ -85,6 +87,11 @@ class ImageStitcher:
         self.final_image = np.zeros((int(max(np.max(corners1[:, 1]), np.max(corners2[:, 1]))), int(max(np.max(corners1[:, 0]), np.max(corners2[:, 0]))), 3), dtype=np.uint8)
         # todo: take into account negative X and Y after homography
         # create final image shape
+        identity_homography = torch.eye(3, device=self.image1.device)
+        homography_matrix = torch.tensor(self.H, device=self.image1.device, dtype=torch.float32)
+        self.image1_warp = self.warp_image(self.image1, identity_homography, self.final_image_dimensions)
+        self.image2_warp = self.warp_image(self.image2, homography_matrix, self.final_image_dimensions)
+        # Warp image 1 with identity and image 2 with homography
 
         contour1 = np.array(corners1, dtype=np.float32).reshape((-1, 1, 2))
         contour2 = np.array(corners2, dtype=np.float32).reshape((-1, 1, 2))
@@ -243,17 +250,21 @@ class ImageStitcher:
             # get patch1 coordinates
             patch2 = cv2.perspectiveTransform(np.array([[[patch[0], patch[1]], [patch[2], patch[1]], [patch[2], patch[3]], [patch[0], patch[3]]]], np.float32), np.linalg.inv(self.H))
             patch2 = np.squeeze(patch2)
-            patch2 = [int(min(patch2[0][0], patch2[3][0])), int(min(patch2[0][1], patch2[1][1])), int(min(patch2[0][0], patch2[3][0]))+256, int(min(patch2[0][1], patch2[1][1]))+256]
+            patch2 = [int(min(patch2[0][0], patch2[3][0])), int(min(patch2[0][1], patch2[1][1])), int(min(patch2[0][0], patch2[3][0]))+patch_size[0], int(min(patch2[0][1], patch2[1][1]))+patch_size[1]]
             # get patch2 coordinates
 
-            patch1_img = self.get_padded_patch(self.image1, patch1)
-            patch2_img = self.get_padded_patch(self.image2, patch2)
-            # extract image patches
+            #patch1_img = self.get_padded_patch(self.image1, patch1)
+            #patch2_img = self.get_padded_patch(self.image2, patch2)
+            # extract image patches - > approach from original images
+
+            patch1_img = self.get_padded_patch(self.image1_warp, patch1)
+            patch2_img = self.get_padded_patch(self.image2_warp, patch1)
+            # extract image patches - > approach from transformed images
 
             patch1_list.append(patch1_img)
             patch2_list.append(patch2_img)
 
-        predicted_flows = self.flow_estimator.process_images(patch1_list, patch2_list)
+        predicted_flows = self.flow_estimator.process_images(patch1_list, patch2_list, [patch_size[0], patch_size[1]])
         # get optical flow between patches
 
         center_distance = patch_size[0] - patch_size[2]
@@ -275,6 +286,12 @@ class ImageStitcher:
             weight_array = (weight_array - min_value) / (max_value - min_value)
             # Normalize weight array
 
+            #weight_np = weight_array.detach().cpu().numpy()
+            #plt.imshow(weight_np, cmap='viridis')
+            #plt.colorbar()
+            #plt.title("Visualization of weight_array")
+            #plt.show()
+
             flow_x = flow[1] * (1 - weight_array)
             flow_y = flow[0] * (1 - weight_array)
             # Modify flow with weight array # !!!!!! opencv uses x, y coordinates, pytorch uses y, x coordinates !!!
@@ -295,7 +312,6 @@ class ImageStitcher:
 
             grid = torch.stack((new_y, new_x), dim=-1).unsqueeze(0)
             # Stack and permute to get grid [H, W, 2]
-
             
             patch2 = patch2.unsqueeze(0)  # Add batch dimension
             patch2_wrap = F2.grid_sample(patch2, grid, mode='bilinear', padding_mode='zeros', align_corners=True).squeeze(0)
@@ -325,15 +341,8 @@ class ImageStitcher:
         Returns:
         torch.Tensor: The final stitched image.
         """
-
-        identity_homography = torch.eye(3, device=self.image1.device)
-        homography_matrix = torch.tensor(self.H, device=self.image1.device, dtype=torch.float32)
         
-        image1_warp = self.warp_image(self.image1, identity_homography, self.final_image_dimensions)
-        image2_warp = self.warp_image(self.image2, homography_matrix, self.final_image_dimensions)
-        # Warp image 1 with identity and image 2 with homography
-        
-        self.final_image = create_composite_image(image1_warp, image2_warp, intersection_center, intersection_normal)
+        self.final_image = create_composite_image(self.image1_warp, self.image2_warp, intersection_center, intersection_normal)
         # Create composite image
         
         for patch, (processed_patch, mask) in zip(patches, processed_patches):
@@ -368,11 +377,16 @@ class ImageStitcher:
             
             self.final_image[:, roi_y1:roi_y2, roi_x1:roi_x2] = roi
             # Place the modified ROI back into the final image
-        
+
             final_image_np = (self.final_image.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
             # Convert final image back to NumPy for visualization if needed
+
+            final_image_np = final_image_np.copy()
+            final_image_np = cv2.cvtColor(final_image_np, cv2.COLOR_RGB2BGR)
+            cv2.rectangle(final_image_np, (roi_x1, roi_y1), (roi_x2, roi_y2), (0, 255, 0), 2)
+            # Draw recrangle around it
             
-            if self.debug:
+            if True:#self.debug:
                 cv2.imshow('final', final_image_np)
                 cv2.waitKey(0)
             
@@ -472,7 +486,8 @@ if '__main__' == __name__:
     stitcher = ImageStitcher(img1, img2, H, True)
     # initialize the ImageStitcher
 
-    patch_size = (256, 256, 128)  # Example patch size - width, height, overlap
+    #patch_size = (256, 256, 128)  # Example patch size - width, height, overlap
+    patch_size = (192, 192, 96)  # Example patch size - width, height, overlap
     final_image = stitcher.stitch(patch_size)
     # perform the stitching
     
