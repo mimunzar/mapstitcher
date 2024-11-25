@@ -332,32 +332,45 @@ class ImageStitcher:
         
         return img2_remapped_tensor_np, mask
 
-def load_config_file(config_file):
+def parse_list_file(config_file):
     images = []
     h_pairs = []
     rows = []
 
-    print(config_file)
+    print(f"Loading config file: {config_file}")
     if not os.path.isfile(config_file):
         raise FileNotFoundError(f"Config file {config_file} not found.")
+
     with open(config_file, 'r') as f:
         lines = f.readlines()
 
-    section = 0  # 0 for images, 1 for pairs
+    section = None  # None initially, then 'images', 'homographies', or 'pairs'
+
     for line in lines:
         line = line.strip()
-        if line == '-':
-            section = section + 1  # switch to pairs section after encountering "-"
+        if not line or line.startswith('#'):  # Skip empty lines and comments
             continue
 
-        if section == 0:
-            images.append(line)
-        elif section == 1:
-            pair = tuple(map(int, line.split()))
-            h_pairs.append(pair)
-        else:
-            pair = tuple(map(int, line.split()))
-            rows.append(pair)
+        if line.startswith('-'):
+            # Determine the section based on the current line
+            if 'images' in line:
+                section = 'images'
+            elif 'homographies' in line:
+                section = 'homographies'
+            elif 'rows' in line:
+                section = 'rows'
+            continue
+
+        # Parse based on the current section
+        if section == 'images':
+            index, path = line.split(maxsplit=1)
+            images.append(path)
+        elif section == 'homographies':
+            indices = tuple(map(int, line.split()))
+            h_pairs.append(indices)
+        elif section == 'rows':
+            indices = tuple(map(int, line.split()))
+            rows.append(indices)
 
     return images, h_pairs, rows
 
@@ -382,7 +395,7 @@ if '__main__' == __name__:
     args = parse_args()
     max_matches = args.max_matches
 
-    images, h_pairs, rows = load_config_file(args.list)
+    images, h_pairs, rows = parse_list_file(args.list)
 
     # Output for debugging
     print("Images List:", images)

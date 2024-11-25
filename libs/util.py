@@ -1,9 +1,10 @@
-from PIL.Image                         import open
+#from PIL.Image                         import open
 from torchvision.transforms.functional import to_tensor
 
 
 def read_image(path):
     """Returns a normalized image represented as [C, H, W] tensor."""
+    from PIL.Image import open
     with open(path) as im:
         return to_tensor(im.convert('RGB'))
 
