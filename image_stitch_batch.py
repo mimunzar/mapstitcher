@@ -310,8 +310,8 @@ class ImageStitcher:
         map_x = map_x + flow_np_resized[:, :, 0] * blending_mask
         map_y = map_y + flow_np_resized[:, :, 1] * blending_mask
 
-        img2_remapped = cv2.remap(img2_overlap_np, map_x, map_y, interpolation=cv2.INTER_LINEAR)
-        mask = cv2.remap(mask, map_x, map_y, interpolation=cv2.INTER_NEAREST)
+        img2_remapped = cv2.remap(img2_overlap_np, map_x.astype(np.float32), map_y.astype(np.float32), interpolation=cv2.INTER_LINEAR)
+        mask = cv2.remap(mask, map_x.astype(np.float32), map_y.astype(np.float32), interpolation=cv2.INTER_NEAREST)
 
         #cv2.namedWindow('img', cv2. WINDOW_NORMAL)
         #cv2.resizeWindow('img', 800, 800)
@@ -332,12 +332,13 @@ class ImageStitcher:
         
         return img2_remapped_tensor_np, mask
 
-def parse_list_file(config_file):
+def parse_list_file(config_file, silent=False):
     images = []
     h_pairs = []
     rows = []
 
-    print(f"Loading config file: {config_file}")
+    if not args.silent:
+        print(f"Loading config file: {config_file}")
     if not os.path.isfile(config_file):
         raise FileNotFoundError(f"Config file {config_file} not found.")
 
@@ -395,12 +396,13 @@ if '__main__' == __name__:
     args = parse_args()
     max_matches = args.max_matches
 
-    images, h_pairs, rows = parse_list_file(args.list)
+    images, h_pairs, rows = parse_list_file(args.list, args.silent)
 
     # Output for debugging
-    print("Images List:", images)
-    print("Pairs List:", h_pairs)
-    print("Rows List:", rows)
+    if not args.silent:
+        print("Images List:", images)
+        print("Pairs List:", h_pairs)
+        print("Rows List:", rows)
     
     # create list of homographies
     homography = make_homography_with_downscaling(**{  # Expects following argparse arguments.
