@@ -140,9 +140,9 @@ class ImageStitcher:
         #    if cv2.waitKey(0) == ord('q'):
         #        break
 
-        #    #cv2.imshow('img', img2)
-        #    #if cv2.waitKey(0) == ord('q'):
-        #    #    break
+            #cv2.imshow('img', img2)
+            #if cv2.waitKey(0) == ord('q'):
+            #    break
 
         #    cv2.imshow('img', soft_image)
         #    if cv2.waitKey(0) == ord('q'):
@@ -301,6 +301,7 @@ class ImageStitcher:
         
         # Adjust the range of distances to smoothen the blending
         max_abs_distance = min(min(np.abs(signed_distance[0, 0]), np.abs(signed_distance[-1, -1])), min(np.abs(signed_distance[0, -1]), np.abs(signed_distance[-1, 0])))
+        max_abs_distance = max_abs_distance * 0.9 # avoid (right) border artifacts
 
         # Normalize the distance to range from 0 (fully img1) to 1 (fully img2)
         blending_mask = (1.0 - (0.5 * (1 + signed_distance / max_abs_distance))) * 2.0
@@ -381,7 +382,7 @@ def parse_args():
     """
     parser = argparse.ArgumentParser(description="Image Stitcher")
     parser.add_argument('--list', required=True, help="File and processing list")
-    parser.add_argument('--subsample-flow', default=1.0, type=float, help="Subsample flow")
+    parser.add_argument('--subsample-flow', default=-1.0, type=float, help="Subsample flow")
     parser.add_argument('--max-matches', default=200, type=int, help="Maximum number of matches per image pair (for optimization)")
     parser.add_argument('--debug', action='store_true', help="Debug mode")
     parser.add_argument('--output', default='result.png', help="Output file")
