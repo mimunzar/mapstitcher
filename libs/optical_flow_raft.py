@@ -13,19 +13,22 @@ class InputPadder:
     """ Pads images such that dimensions are divisible by 8 """
     def __init__(self, dims, mode='sintel'):
         self.ht, self.wd = dims[-2:]
-        pad_ht = (((self.ht // 8) + 1) * 8 - self.ht) % 8
-        pad_wd = (((self.wd // 8) + 1) * 8 - self.wd) % 8
+        pad_ht = (8 - (self.ht % 8)) % 8  # Calculate the padding needed to make ht divisible by 8
+        pad_wd = (8 - (self.wd % 8)) % 8  # Calculate the padding needed to make wd divisible by 8
+
         if mode == 'sintel':
-            self._pad = [pad_wd//2, pad_wd - pad_wd//2, pad_ht//2, pad_ht - pad_ht//2]
+            self._pad = [pad_wd // 2, pad_wd - pad_wd // 2, pad_ht // 2, pad_ht - pad_ht // 2]
         else:
-            self._pad = [pad_wd//2, pad_wd - pad_wd//2, 0, pad_ht]
+            self._pad = [pad_wd // 2, pad_wd - pad_wd // 2, 0, pad_ht]
 
     def pad(self, *inputs):
+        """ Apply padding to the inputs """
         return [Fnn.pad(x, self._pad, mode='replicate') for x in inputs]
 
-    def unpad(self,x):
+    def unpad(self, x):
+        """ Remove padding from the input """
         ht, wd = x.shape[-2:]
-        c = [self._pad[2], ht-self._pad[3], self._pad[0], wd-self._pad[1]]
+        c = [self._pad[2], ht - self._pad[3], self._pad[0], wd - self._pad[1]]
         return x[..., c[0]:c[1], c[2]:c[3]]
 
 class OpticalFlow_RAFT:
@@ -38,25 +41,118 @@ class OpticalFlow_RAFT:
         self.debug = debug
         self.weights = Raft_Large_Weights.DEFAULT
         self.transforms = self.weights.transforms()
-        self.model = raft_large(weights=self.weights)
-        self.model = self.model.eval()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model = self.model.to(self.device)
         # load the RAFT model
 
-    def compute_optical_flow(self, img1_overlap, img2_overlap, subsample=1.0):
-        if subsample < 0:
-            # auto compute max possible subsample
-            maxpix = 1200 * 1200
-            subsample = np.sqrt((img1_overlap.shape[2] * img1_overlap.shape[3]) / maxpix)
-            if not self.silent:
-                print(f"Auto computed subsample: {subsample}")
+    def compute_optical_flow_tiled(self, img1, img2, orientation='horizontal'):
+        maxpix = 1200 * 1200
+        if orientation == 'vertical':
+            patch_y = maxpix // img1.shape[1]
+            patch_x = img1.shape[1]
+            overlap = (int)(patch_y * 0.1)
 
-        if subsample != 1.0:
-            img1_overlap_sub = Fnn.interpolate(img1_overlap, scale_factor=1.0/subsample, mode='bilinear', align_corners=False)
-            img2_overlap_sub = Fnn.interpolate(img2_overlap, scale_factor=1.0/subsample, mode='bilinear', align_corners=False)
-        else:
-            img1_overlap_sub, img2_overlap_sub = img1_overlap, img2_overlap
+            result = np.zeros((img1.shape[0], img1.shape[1], 2), dtype=np.float32)
+            weights = np.zeros((img1.shape[0], img1.shape[1], 1), dtype=np.float32)
+            with torch.no_grad():
+                if not self.silent:
+                    print(f"Processing {img1.shape[0] // (patch_y - overlap)} flow patches")
+                for y in range(0, img1.shape[0], patch_y - overlap):
+                    #print(f"Processing path {y // (patch_y - overlap)} of {img1.shape[0] // (patch_y - overlap)}")
+
+                    model = raft_large(weights=self.weights)
+                    model = model.eval()
+                    model = model.to(self.device)
+
+                    # extract patches, respect image boundaries
+                    img1_patch = img1[y:y+patch_y]
+                    img2_patch = img2[y:y+patch_y]
+                    # if patch is too small, move it up
+                    if img1_patch.shape[0] < patch_y:
+                        y = max(y - (patch_y - img1_patch.shape[0]), 0)
+                        img1_patch = img1[y:y+patch_y]
+                        img2_patch = img2[y:y+patch_y]
+                    # patches to gpu
+                    img1_patch_gpu = torch.from_numpy(img1_patch).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
+                    img2_patch_gpu = torch.from_numpy(img2_patch).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
+                    #print(img1_patch_gpu.shape, img2_patch_gpu.shape)
+                    padder = InputPadder(img1_patch_gpu.shape)
+                    img1_patch_gpu, img2_patch_gpu = padder.pad(img1_patch_gpu, img2_patch_gpu)
+
+                    #print(img1_patch_gpu.shape, img2_patch_gpu.shape)
+                    flow_up_sub = model(img1_patch_gpu, img2_patch_gpu)
+                    flow_up_unp_sub = padder.unpad(flow_up_sub[0])
+                    flow_np = flow_up_unp_sub.squeeze(0).cpu().numpy().transpose(1, 2, 0)
+
+                    # Add flow to result and update weights for averaging
+                    result[y:min(y + patch_y, img1.shape[0]), :, :] += flow_np[:min(patch_y, img1.shape[0] - y), :, :]
+                    weights[y:min(y + patch_y, img1.shape[0]), :, :] += 1
+
+                    del img1_patch_gpu, img2_patch_gpu, model
+                    torch.cuda.empty_cache()
+            
+            result = result / np.maximum(weights, 1e-6)  # Avoid division by zero
+
+        elif orientation == 'horizontal':
+            patch_y = img1.shape[0]
+            patch_x = maxpix // img1.shape[0]
+            overlap = (int)(patch_x * 0.1)
+
+            result = np.zeros((img1.shape[0], img1.shape[1], 2), dtype=np.float32)
+            weights = np.zeros((img1.shape[0], img1.shape[1], 1), dtype=np.float32)
+            with torch.no_grad():
+                if not self.silent:
+                    print(f"Processing {img1.shape[1] // (patch_x - overlap)} flow patches")
+                for x in range(0, img1.shape[1], patch_x - overlap):
+                    #print(f"Processing path {x // (patch_x - overlap)} of {img1.shape[1] // (patch_x - overlap)}")
+
+                    model = raft_large(weights=self.weights)
+                    model = model.eval()
+                    model = model.to(self.device)
+
+                    # extract patches, respect image boundaries
+                    img1_patch = img1[:, x:x+patch_x]
+                    img2_patch = img2[:, x:x+patch_x]
+                    # if patch is too small, move it left
+                    if img1_patch.shape[1] < patch_x:
+                        x = max(x - (patch_x - img1_patch.shape[1]), 0)
+                        img1_patch = img1[:, x:x+patch_x]
+                        img2_patch = img2[:, x:x+patch_x]
+                    # patches to gpu
+                    img1_patch_gpu = torch.from_numpy(img1_patch).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
+                    img2_patch_gpu = torch.from_numpy(img2_patch).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
+
+                    padder = InputPadder(img1_patch_gpu.shape)
+                    img1_patch_gpu, img2_patch_gpu = padder.pad(img1_patch_gpu, img2_patch_gpu)
+
+                    flow_up_sub = model(img1_patch_gpu, img2_patch_gpu)
+                    flow_up_unp_sub = padder.unpad(flow_up_sub[0])
+                    flow_np = flow_up_unp_sub.squeeze(0).cpu().numpy().transpose(1, 2, 0)
+
+                    # Add flow to result and update weights for averaging
+                    result[:, x:min(x + patch_x, img1.shape[1]), :] += flow_np[:, :min(patch_x, img1.shape[1] - x), :]
+                    weights[:, x:min(x + patch_x, img1.shape[1]), :] += 1
+                    
+                    del img1_patch_gpu, img2_patch_gpu, model
+                    torch.cuda.empty_cache()
+            
+            result = result / np.maximum(weights, 1e-6)  # Avoid division by zero
+
+        # Final averaging to handle overlaps
+        return result
+
+    def compute_optical_flow(self, img1_overlap, img2_overlap, orig_size, subsample=1.0):
+        #if subsample < 0:
+        #    # auto compute max possible subsample
+        #    maxpix = 1200 * 1200
+        #    subsample = np.sqrt((img1_overlap.shape[2] * img1_overlap.shape[3]) / maxpix)
+        #    if not self.silent:
+        #        print(f"Auto computed subsample: {subsample}")
+
+        #if subsample != 1.0:
+        #    img1_overlap_sub = Fnn.interpolate(img1_overlap, scale_factor=1.0/subsample, mode='bilinear', align_corners=False)
+        #    img2_overlap_sub = Fnn.interpolate(img2_overlap, scale_factor=1.0/subsample, mode='bilinear', align_corners=False)
+        #else:
+        img1_overlap_sub, img2_overlap_sub = img1_overlap, img2_overlap
 
         # Apply padding to subsampled images
         padder = InputPadder(img1_overlap_sub.shape)
@@ -72,12 +168,12 @@ class OpticalFlow_RAFT:
 
             # Upsample the flow back to the original resolution
             # print(flow_up_unp_sub.shape, img1_overlap.shape)
-            flow_up_unp = Fnn.interpolate(flow_up_unp_sub, size=(img1_overlap.shape[2], img1_overlap.shape[3]), mode='nearest')
+            flow_up_unp = Fnn.interpolate(flow_up_unp_sub, size=(orig_size.shape[0], orig_size.shape[1]), mode='nearest')
             
             if subsample != 1.0:
                 flow_up_unp = flow_up_unp * (subsample)
             
-        return flow_up_unp
+        return flow_up_unp.squeeze(0).cpu().numpy()
 
     def process_image(self, image_list1, image_list2, size):
         """

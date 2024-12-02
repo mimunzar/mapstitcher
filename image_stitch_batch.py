@@ -9,7 +9,10 @@ import torch
 import torch.nn.functional as F2
 
 from libs.optical_flow_raft import OpticalFlow_RAFT
+from libs.optical_flow_cv import OpticalFlow_CV
 from libs.homography_optimizer import HomographyOptimizer
+
+import torch.nn.functional as Fnn
 
 from libs.util import *
 from libs.homography import *
@@ -17,11 +20,12 @@ from libs.homography import *
 import matplotlib.pyplot as plt
 
 class ImageStitcher:
-    def __init__(self, subsample=1.0, debug=False, silent=False):
+    def __init__(self, subsample=1.0, flow_alg='cv', debug=False, silent=False):
         #self.optical_flow = OpticalFlow_RAFT()
         self.subsample_flow = subsample
         self.debug = debug
         self.silent = silent
+        self.flow_alg = flow_alg
 
     def find_intersection(self, corners1, corners2, img1_shape, img2_shape):
         """
@@ -54,10 +58,12 @@ class ImageStitcher:
 
         if abs(intersection_normal[0]) > abs(intersection_normal[1]):
             y_min = 0
-            y_max = max(img1_shape[0], img2_shape[0])
+            # max y from all corners
+            y_max = max(contour1[:, 0, 1].max(), contour2[:, 0, 1].max())
         else:
             x_min = 0
-            x_max = max(img1_shape[1], img2_shape[1])
+            #x_max = max(img1_shape[1], img2_shape[1])
+            x_max = max(contour1[:, 0, 0].max(), contour2[:, 0, 0].max())
 
         # restrict non-dominant intrsection to max 10% of image size
         #if abs(intersection_normal[0]) > abs(intersection_normal[1]):
@@ -133,20 +139,20 @@ class ImageStitcher:
 
         soft_image = (img1 * (1 - blending_mask_expanded) + img2 * blending_mask_expanded).astype(np.uint8)
 
-        #cv2.namedWindow('img', cv2. WINDOW_NORMAL)
-        #cv2.resizeWindow('img', 800, 800)
-        #while True:
-        #    cv2.imshow('img', img1)
-        #    if cv2.waitKey(0) == ord('q'):
-        #        break
+        '''cv2.namedWindow('img', cv2. WINDOW_NORMAL)
+        cv2.resizeWindow('img', 800, 800)
+        while True:
+            cv2.imshow('img', img1)
+            if cv2.waitKey(0) == ord('q'):
+                break
 
-            #cv2.imshow('img', img2)
-            #if cv2.waitKey(0) == ord('q'):
-            #    break
+            cv2.imshow('img', img2)
+            if cv2.waitKey(0) == ord('q'):
+                break
 
-        #    cv2.imshow('img', soft_image)
-        #    if cv2.waitKey(0) == ord('q'):
-        #        break
+            cv2.imshow('img', soft_image)
+            if cv2.waitKey(0) == ord('q'):
+                break'''
 
         return soft_image
 
@@ -242,29 +248,89 @@ class ImageStitcher:
             #print(f"Allocated: {torch.cuda.memory_allocated() / 1e6} MB")
             #print(f"Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
 
-            with torch.no_grad():
-                # Load tensors to GPU
-                img1_overlap = torch.from_numpy(overlap1).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
-                img2_overlap = torch.from_numpy(overlap2).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
+            if self.flow_alg == 'raft':
+                with torch.no_grad():
+                    subsample = self.subsample_flow
+                    img1_overlap_sub = overlap1
+                    img2_overlap_sub = overlap2
 
-                # Compute optical flow
-                optical_flow = OpticalFlow_RAFT(silent=self.silent)
-                flow = optical_flow.compute_optical_flow(img1_overlap, img2_overlap, self.subsample_flow)
+                    # subsample flow
+                    if subsample > 0.0 and subsample != 1.0:
+                        img1_overlap_sub = cv2.resize(overlap1, (int(overlap1.shape[1] / subsample), int(overlap1.shape[0] / subsample)))
+                        img2_overlap_sub = cv2.resize(overlap2, (int(overlap2.shape[1] / subsample), int(overlap2.shape[0] / subsample)))
+                    
+                    # Compute optical flow
+                    optical_flow = OpticalFlow_RAFT(silent=self.silent)
+                    orientation = 'vertical' if abs(isect_normal[0]) > abs(isect_normal[1]) else 'horizontal'
+                    flow = optical_flow.compute_optical_flow_tiled(img1_overlap_sub, img2_overlap_sub, orientation)
+                    
+                    # upsample flow
+                    if subsample > 0.0 and subsample != 1.0:
+                        flow = cv2.resize(flow, (overlap1.shape[1], overlap1.shape[0]), interpolation=cv2.INTER_NEAREST)
+                        flow = flow * subsample
 
-                del img1_overlap
-                torch.cuda.empty_cache()
-                # Transform img2_overlap using optical flow
-                img_mid, mask_overlap = self.remap_image_with_flow(img2_overlap, flow, isect_normal, midpt, mask_overlap)
-                #img_mid = (img_mid.squeeze(0).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+                    flow = flow.transpose(2, 0, 1)
 
-                # Explicitly delete tensors
-                del img2_overlap, flow
-                del optical_flow
-                torch.cuda.empty_cache()
+                '''with torch.no_grad():
+                    # Load tensors to GPU
+                    img1_overlap = torch.from_numpy(overlap1).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
+                    img2_overlap = torch.from_numpy(overlap2).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
+                    
+                    # subsample flow
+                    subsample = 1.0
+                    if self.subsample_flow < 0:
+                        # auto compute max possible subsample
+                        maxpix = 1200 * 1200
+                        subsample = np.sqrt((img1_overlap.shape[2] * img1_overlap.shape[3]) / maxpix)
+                        if not self.silent:
+                            print(f"Auto computed subsample: {subsample}")
 
-            # Force garbage collection and clear cache
-            gc.collect()
-            torch.cuda.empty_cache()
+                    if subsample != 1.0:
+                        img1_overlap_sub = Fnn.interpolate(img1_overlap, scale_factor=1.0/subsample, mode='bilinear', align_corners=False)
+                        img2_overlap_sub = Fnn.interpolate(img2_overlap, scale_factor=1.0/subsample, mode='bilinear', align_corners=False)
+                    del img1_overlap
+                    del img2_overlap
+                    torch.cuda.empty_cache()
+
+                    # Compute optical flow
+                    optical_flow = OpticalFlow_RAFT(silent=self.silent)
+                    flow = optical_flow.compute_optical_flow(img1_overlap_sub, img2_overlap_sub, overlap1, subsample)
+
+                    torch.cuda.empty_cache()
+                    # Transform img2_overlap using optical flow
+
+                    # Explicitly delete tensors
+                    #del flow
+                    del optical_flow
+                    torch.cuda.empty_cache()
+
+                # Force garbage collection and clear cache
+                gc.collect()
+                torch.cuda.empty_cache()'''
+            else:
+                # try opencv optical flow
+                subsample = self.subsample_flow
+                img1_overlap_sub = overlap1
+                img2_overlap_sub = overlap2
+
+                # subsample flow
+                if subsample > 0.0 and subsample != 1.0:
+                    img1_overlap_sub = cv2.resize(overlap1, (int(overlap1.shape[1] / subsample), int(overlap1.shape[0] / subsample)))
+                    img2_overlap_sub = cv2.resize(overlap2, (int(overlap2.shape[1] / subsample), int(overlap2.shape[0] / subsample)))
+
+                # compute flow
+                optical_flow = OpticalFlow_CV()
+                flow = optical_flow.process_images(img1_overlap_sub, img2_overlap_sub)
+
+                # upsample flow
+                if subsample > 0.0 and subsample != 1.0:
+                    flow = cv2.resize(flow, (overlap1.shape[1], overlap1.shape[0]), interpolation=cv2.INTER_NEAREST)
+                    flow = flow * subsample
+                
+                flow = flow.transpose(2, 0, 1)
+
+            img_mid, mask_overlap = self.remap_image_with_flow(overlap2, flow, isect_normal, midpt, mask_overlap)
+            #img_mid = (img_mid.squeeze(0).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
 
             #print("After processing:")
             #print(f"Allocated: {torch.cuda.memory_allocated() / 1e6} MB")
@@ -282,14 +348,15 @@ class ImageStitcher:
         return result_canvas, H_offset
 
     def remap_image_with_flow(self, img2_overlap, flow, intersection_normal, point, mask): # todo: for arbitrary image position needs to be changed
-        img2_overlap_np = img2_overlap.squeeze(0).cpu().numpy()  # Shape: [C, H, W]
-        flow_np = flow.squeeze(0).cpu().numpy()  # Shape: [2, H, W]
+        #img2_overlap_np = img2_overlap.squeeze(0).cpu().numpy()  # Shape: [C, H, W]
+        img2_overlap_np = img2_overlap  # Shape: [H, W, C]
+        flow_np = flow#flow.squeeze(0).cpu().numpy()  # Shape: [2, H, W]
         
-        img2_overlap_np = img2_overlap_np.transpose(1, 2, 0)  # Shape: [H, W, C]
+        #img2_overlap_np = img2_overlap_np.transpose(1, 2, 0)  # Shape: [H, W, C]
         flow_np = flow_np.transpose(1, 2, 0)  # Shape: [H, W, 2]
         
         h, w, _ = img2_overlap_np.shape
-        flow_np_resized = cv2.resize(flow_np, (w, h))  # Resize flow if needed
+        flow_np_resized = flow_np#cv2.resize(flow_np, (w, h))  # Resize flow if needed
 
         y, x = np.meshgrid(np.arange(h).astype(np.float32), np.arange(w).astype(np.float32), indexing='ij')
 
@@ -329,7 +396,8 @@ class ImageStitcher:
         #    if cv2.waitKey(0) == ord('q'):
         #        break
         
-        img2_remapped_tensor_np = (img2_remapped * 255).astype(np.uint8)
+        #img2_remapped_tensor_np = (img2_remapped * 255).astype(np.uint8)
+        img2_remapped_tensor_np = img2_remapped
         
         return img2_remapped_tensor_np, mask
 
@@ -382,7 +450,8 @@ def parse_args():
     """
     parser = argparse.ArgumentParser(description="Image Stitcher")
     parser.add_argument('--list', required=True, help="File and processing list")
-    parser.add_argument('--subsample-flow', default=-1.0, type=float, help="Subsample flow")
+    parser.add_argument('--flow-alg', required=False, default='raft', help="Optical Flow algorithm cv or raft")
+    parser.add_argument('--subsample-flow', default=2.0, type=float, help="Subsample flow")
     parser.add_argument('--max-matches', default=200, type=int, help="Maximum number of matches per image pair (for optimization)")
     parser.add_argument('--debug', action='store_true', help="Debug mode")
     parser.add_argument('--output', default='result.png', help="Output file")
@@ -404,6 +473,8 @@ if '__main__' == __name__:
         print("Images List:", images)
         print("Pairs List:", h_pairs)
         print("Rows List:", rows)
+        print("Flow Algorithm:", args.flow_alg)
+        print("Subsample Flow:", args.subsample_flow)
     
     # create list of homographies
     homography = make_homography_with_downscaling(**{  # Expects following argparse arguments.
@@ -441,7 +512,7 @@ if '__main__' == __name__:
         images_loaded.append(cv2.imread(image))
     # create result image based on homographies
 
-    image_stitcher = ImageStitcher(args.subsample_flow, args.debug, silent=args.silent)
+    image_stitcher = ImageStitcher(args.subsample_flow, args.flow_alg, args.debug, silent=args.silent)
 
     rows_canvi = []
     rows_offset = []
