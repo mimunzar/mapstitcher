@@ -44,8 +44,9 @@ class OpticalFlow_RAFT:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         # load the RAFT model
 
-    def compute_optical_flow_tiled(self, img1, img2, orientation='horizontal'):
-        maxpix = 1200 * 1200
+    def compute_optical_flow_tiled(self, img1, img2, orientation='horizontal', vram=8.0):
+        # 1200 * 1200 per 8GB of VRAM (maybe more, but i have no means of testing)
+        maxpix = (int)(1200 * 1200 * vram / 8.0)
         if orientation == 'vertical':
             patch_y = maxpix // img1.shape[1]
             patch_x = img1.shape[1]
@@ -55,7 +56,7 @@ class OpticalFlow_RAFT:
             weights = np.zeros((img1.shape[0], img1.shape[1], 1), dtype=np.float32)
             with torch.no_grad():
                 if not self.silent:
-                    print(f"Processing {img1.shape[0] // (patch_y - overlap)} flow patches")
+                    print(f"Processing {img1.shape[0] // (patch_y - overlap)} flow patches {patch_y} x {patch_x}")
                 for y in range(0, img1.shape[0], patch_y - overlap):
                     #print(f"Processing path {y // (patch_y - overlap)} of {img1.shape[0] // (patch_y - overlap)}")
 
@@ -101,7 +102,7 @@ class OpticalFlow_RAFT:
             weights = np.zeros((img1.shape[0], img1.shape[1], 1), dtype=np.float32)
             with torch.no_grad():
                 if not self.silent:
-                    print(f"Processing {img1.shape[1] // (patch_x - overlap)} flow patches")
+                    print(f"Processing {img1.shape[1] // (patch_x - overlap)} flow patches {patch_y} x {patch_x}")
                 for x in range(0, img1.shape[1], patch_x - overlap):
                     #print(f"Processing path {x // (patch_x - overlap)} of {img1.shape[1] // (patch_x - overlap)}")
 

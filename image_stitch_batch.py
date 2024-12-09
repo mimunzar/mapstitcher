@@ -20,12 +20,13 @@ from libs.homography import *
 import matplotlib.pyplot as plt
 
 class ImageStitcher:
-    def __init__(self, subsample=1.0, flow_alg='cv', debug=False, silent=False):
+    def __init__(self, subsample=1.0, flow_alg='cv', vram=8.0, debug=False, silent=False):
         #self.optical_flow = OpticalFlow_RAFT()
         self.subsample_flow = subsample
         self.debug = debug
         self.silent = silent
         self.flow_alg = flow_alg
+        self.vram = vram
 
     def find_intersection(self, corners1, corners2, img1_shape, img2_shape):
         """
@@ -140,7 +141,7 @@ class ImageStitcher:
         soft_image = (img1 * (1 - blending_mask_expanded) + img2 * blending_mask_expanded).astype(np.uint8)
 
         '''cv2.namedWindow('img', cv2. WINDOW_NORMAL)
-        cv2.resizeWindow('img', 800, 800)
+        cv2.resizeWindow('img', 1000, 1000)
         while True:
             cv2.imshow('img', img1)
             if cv2.waitKey(0) == ord('q'):
@@ -262,7 +263,7 @@ class ImageStitcher:
                     # Compute optical flow
                     optical_flow = OpticalFlow_RAFT(silent=self.silent)
                     orientation = 'vertical' if abs(isect_normal[0]) > abs(isect_normal[1]) else 'horizontal'
-                    flow = optical_flow.compute_optical_flow_tiled(img1_overlap_sub, img2_overlap_sub, orientation)
+                    flow = optical_flow.compute_optical_flow_tiled(img1_overlap_sub, img2_overlap_sub, orientation, self.vram)
                     
                     # upsample flow
                     if subsample > 0.0 and subsample != 1.0:
@@ -450,9 +451,11 @@ def parse_args():
     """
     parser = argparse.ArgumentParser(description="Image Stitcher")
     parser.add_argument('--list', required=True, help="File and processing list")
+    parser.add_argument('--optimization-model', required=False, default='affine', help="Optimization model homography or affine")
     parser.add_argument('--flow-alg', required=False, default='raft', help="Optical Flow algorithm cv or raft")
     parser.add_argument('--subsample-flow', default=2.0, type=float, help="Subsample flow")
-    parser.add_argument('--max-matches', default=200, type=int, help="Maximum number of matches per image pair (for optimization)")
+    parser.add_argument('--vram-size', default=8.0, type=float, help="GPU VRAM size in GB")
+    parser.add_argument('--max-matches', default=500, type=int, help="Maximum number of matches per image pair (for optimization)")
     parser.add_argument('--debug', action='store_true', help="Debug mode")
     parser.add_argument('--output', default='result.png', help="Output file")
     parser.add_argument('--silent', action='store_true', help="Silent mode")
@@ -473,6 +476,7 @@ if '__main__' == __name__:
         print("Images List:", images)
         print("Pairs List:", h_pairs)
         print("Rows List:", rows)
+        print("Optimization Model:", args.optimization_model)
         print("Flow Algorithm:", args.flow_alg)
         print("Subsample Flow:", args.subsample_flow)
     
@@ -486,39 +490,44 @@ if '__main__' == __name__:
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     homographies = []
+    for image in images:
+        homographies.append(np.eye(3))
     corresponding_points = []
     
     for i, pair in enumerate(h_pairs):
         # compute homography
         H_data = homography(read_image(images[pair[0]]), read_image(images[pair[1]]))
-        homographies.append(H_data[0])
-        corresponding_points.append(H_data[1])
+        
+        # update homographies
+        homographies[pair[1]] = np.dot(homographies[pair[0]], H_data[0])
+        # store
+        corresponding_points.append({
+            'pair': pair,
+            'points': H_data[1]
+        })
 
-        #print(f"Pair {pair[0]} - {pair[1]}")
-        #print(H_data[0])
-
-    optimizer = HomographyOptimizer(max_matches, silent=args.silent)
+    optimizer = HomographyOptimizer(max_matches, args.optimization_model, silent=args.silent)
     h_optimized = optimizer.optimize(h_pairs, homographies, corresponding_points)
 
-    homographies = []
-    for image in images:
-        homographies.append(np.eye(3))
+    #homographies = []
+    #for image in images:
+    #    homographies.append(np.eye(3))
     
-    for i, pair in enumerate(h_pairs):
-        homographies[pair[1]] = np.dot(homographies[pair[0]], h_optimized[i])
+    #for i, pair in enumerate(h_pairs):
+    #    homographies[pair[1]] = np.dot(homographies[pair[0]], h_optimized[i])
 
     images_loaded = []
     for image in images:
         images_loaded.append(cv2.imread(image))
     # create result image based on homographies
 
-    image_stitcher = ImageStitcher(args.subsample_flow, args.flow_alg, args.debug, silent=args.silent)
+    image_stitcher = ImageStitcher(args.subsample_flow, args.flow_alg, args.vram_size, args.debug, silent=args.silent)
 
     rows_canvi = []
     rows_offset = []
     for j, row in enumerate(rows):
         row_images = [images_loaded[i] for i in row]
-        row_homographies = [homographies[i] for i in row]
+        row_homographies = [h_optimized[i] for i in row]
         row_canvas, H_offset = image_stitcher.stitch_set(row_images, row_homographies)    
         rows_canvi.append(row_canvas)
         rows_offset.append(H_offset)

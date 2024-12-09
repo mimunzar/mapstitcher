@@ -5,6 +5,8 @@ from torchvision.transforms.functional import to_tensor
 def read_image(path):
     """Returns a normalized image represented as [C, H, W] tensor."""
     from PIL.Image import open
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = 1000000000 # To avoid DecompressionBombError
     with open(path) as im:
         return to_tensor(im.convert('RGB'))
 
