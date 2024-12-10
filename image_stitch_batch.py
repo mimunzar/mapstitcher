@@ -66,15 +66,6 @@ class ImageStitcher:
             #x_max = max(img1_shape[1], img2_shape[1])
             x_max = max(contour1[:, 0, 0].max(), contour2[:, 0, 0].max())
 
-        # restrict non-dominant intrsection to max 10% of image size
-        #if abs(intersection_normal[0]) > abs(intersection_normal[1]):
-        #    if x_max - x_min > 0.1 * img1_shape[1]:
-        #        x_max = x_min + 0.1 * img1_shape[1] if intersection_normal[0] > 0 else x_min - 0.1 * img1_shape[1]
-        #else:
-        #    if y_max - y_min > 0.1 * img1_shape[0]:
-        #        y_max = y_min + 0.1 * img1_shape[0] if intersection_normal[1] > 0 else y_min - 0.1 * img1_shape[0]
-        # restrict non-dominant intrsection to max 10% of image size
-
         intersection = intersection_points
         intersection_bb = (x_min, y_min, x_max, y_max)
         intersection_center = intersection_center
@@ -271,43 +262,6 @@ class ImageStitcher:
                         flow = flow * subsample
 
                     flow = flow.transpose(2, 0, 1)
-
-                '''with torch.no_grad():
-                    # Load tensors to GPU
-                    img1_overlap = torch.from_numpy(overlap1).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
-                    img2_overlap = torch.from_numpy(overlap2).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
-                    
-                    # subsample flow
-                    subsample = 1.0
-                    if self.subsample_flow < 0:
-                        # auto compute max possible subsample
-                        maxpix = 1200 * 1200
-                        subsample = np.sqrt((img1_overlap.shape[2] * img1_overlap.shape[3]) / maxpix)
-                        if not self.silent:
-                            print(f"Auto computed subsample: {subsample}")
-
-                    if subsample != 1.0:
-                        img1_overlap_sub = Fnn.interpolate(img1_overlap, scale_factor=1.0/subsample, mode='bilinear', align_corners=False)
-                        img2_overlap_sub = Fnn.interpolate(img2_overlap, scale_factor=1.0/subsample, mode='bilinear', align_corners=False)
-                    del img1_overlap
-                    del img2_overlap
-                    torch.cuda.empty_cache()
-
-                    # Compute optical flow
-                    optical_flow = OpticalFlow_RAFT(silent=self.silent)
-                    flow = optical_flow.compute_optical_flow(img1_overlap_sub, img2_overlap_sub, overlap1, subsample)
-
-                    torch.cuda.empty_cache()
-                    # Transform img2_overlap using optical flow
-
-                    # Explicitly delete tensors
-                    #del flow
-                    del optical_flow
-                    torch.cuda.empty_cache()
-
-                # Force garbage collection and clear cache
-                gc.collect()
-                torch.cuda.empty_cache()'''
             else:
                 # try opencv optical flow
                 subsample = self.subsample_flow
@@ -426,8 +380,8 @@ def parse_list_file(config_file, silent=False):
             # Determine the section based on the current line
             if 'images' in line:
                 section = 'images'
-            elif 'homographies' in line:
-                section = 'homographies'
+            #elif 'homographies' in line:
+            #    section = 'homographies'
             elif 'rows' in line:
                 section = 'rows'
             continue
@@ -436,18 +390,58 @@ def parse_list_file(config_file, silent=False):
         if section == 'images':
             index, path = line.split(maxsplit=1)
             images.append(path)
-        elif section == 'homographies':
-            indices = tuple(map(int, line.split()))
-            h_pairs.append(indices)
+        #elif section == 'homographies':
+        #    indices = tuple(map(int, line.split()))
+        #    h_pairs.append(indices)
         elif section == 'rows':
             indices = tuple(map(int, line.split()))
             rows.append(indices)
 
-    return images, h_pairs, rows
+    return images, rows
+
+def get_all_neighbours(rows):
+    rows = np.array(rows)  # Convert to NumPy array for easier manipulation
+    num_rows, num_cols = rows.shape
+
+    # Flatten indices and find valid (non-'X') elements
+    valid_indices = [(i, j) for i in range(num_rows) for j in range(num_cols) if rows[i, j] != 'X']
+    
+    # Find the approximated middle index
+    mid_row = num_rows // 2
+    mid_col = num_cols // 2
+    # Find the closest valid index to the middle
+    mid_index = min(
+        valid_indices,
+        key=lambda idx: abs(idx[0] - mid_row) + abs(idx[1] - mid_col)
+    )
+    start_index = rows[mid_index]  # The value at the middle index
+
+    # Create pairs of neighbors
+    pairs = []
+    for i, j in valid_indices:
+        current = rows[i, j]
+        # Check all neighbors of the current element
+        neighbors = [
+            (i, j - 1),  # Left
+            (i, j + 1),  # Right
+            (i - 1, j),  # Up
+            (i + 1, j),  # Down
+        ]
+        for ni, nj in neighbors:
+            if 0 <= ni < num_rows and 0 <= nj < num_cols and rows[ni, nj] != 'X':
+                neighbor = rows[ni, nj]
+                if (current, neighbor) not in pairs and (neighbor, current) not in pairs:
+                    pairs.append((current, neighbor))
+    
+    # Sort pairs to prioritize connections involving the start index
+    pairs.sort(key=lambda x: (x[0] != start_index, x[1] != start_index))
+    converted_data = [(int(a), int(b)) for a, b in pairs]
+
+    return converted_data
 
 def parse_args():
     """
-    Dummy function to parse command line arguments.
+    Parse command line arguments.
     """
     parser = argparse.ArgumentParser(description="Image Stitcher")
     parser.add_argument('--list', required=True, help="File and processing list")
@@ -455,7 +449,7 @@ def parse_args():
     parser.add_argument('--flow-alg', required=False, default='raft', help="Optical Flow algorithm cv or raft")
     parser.add_argument('--subsample-flow', default=2.0, type=float, help="Subsample flow")
     parser.add_argument('--vram-size', default=8.0, type=float, help="GPU VRAM size in GB")
-    parser.add_argument('--max-matches', default=500, type=int, help="Maximum number of matches per image pair (for optimization)")
+    parser.add_argument('--max-matches', default=800, type=int, help="Maximum number of matches per image pair (for optimization)")
     parser.add_argument('--debug', action='store_true', help="Debug mode")
     parser.add_argument('--output', default='result.png', help="Output file")
     parser.add_argument('--silent', action='store_true', help="Silent mode")
@@ -463,13 +457,13 @@ def parse_args():
 
 if '__main__' == __name__:
     """
-    Dummy main function to test the ImageStitcher class.
-    Run as python -m libs.image_stitch --img1 path --img2 path from a command line.
+    Main function.
     """
     args = parse_args()
     max_matches = args.max_matches
 
-    images, h_pairs, rows = parse_list_file(args.list, args.silent)
+    images, rows = parse_list_file(args.list, args.silent)
+    h_pairs = get_all_neighbours(rows)
 
     # Output for debugging
     if not args.silent:

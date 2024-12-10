@@ -1,7 +1,8 @@
 - images
-0 test_data/img1.jpg
-1 test_data/img2.jpg
-- homographies
-0 1
+0 test_data/img0.jpg
+1 test_data/img1.jpg
+2 test_data/img2.jpg
+3 test_data/img3.jpg
 - rows
 0 1
+2 3

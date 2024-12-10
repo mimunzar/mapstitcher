@@ -21,7 +21,17 @@ To run the image stitching process, use the following command:
 ```bash
 python image_stitch_batch.py --list list.txt
 
-list.txt contains the configuration for images, homographies, and stitching rows. Ensure it follows the required format detailed below.
+list.txt contains the configuration for images, and stitching rows. Ensure it follows the required format detailed below.
+
+Parameters:
+--list 			required, File and processing list
+--optimization-model 	optional, default='affine', Optimization model homography or affine
+--flow-alg 		optional, default='raft', Optical Flow algorithm cv or raft
+--subsample-flow 	optional, default=2.0, Subsample flow
+--vram-size		optional, default=8.0, GPU VRAM size in GB, more can speed-up raft optflow computation 
+--max-matches		optional, default=800, Maximum number of matches per image pair (for optimization)
+--output		optional, default='result.png', Output file
+--silent		optional, default=False, Kill any console output
 
 Input List Format
 -----------------
@@ -33,19 +43,12 @@ The input list file (list.txt) should be structured as follows:
 2 path_to_image_2
 ...
 N path_to_image_N
-- homographies
-0 1
-0 2
-2 N
-1 N
 - rows
 0 1
 2 N
 
 where 
 'images' section contains an enumerated list of images to be stitched, starting from 0.
-
-'homographies' section lists pairs of images that overlap, for which homographies will be computed. Each pair should appear on a new line.
 
 'rows' section defines the structure of the image stitching. Each line represents a row of images.
 
@@ -57,10 +60,6 @@ For stitching four images left-to-right in a single row:
 1 path/image1.png
 2 path/image2.png
 3 path/image3.png
-- homographies
-0 1
-1 2
-2 3
 - rows
 0 1 2 3
 
@@ -72,14 +71,6 @@ For stitching six images with three on the top row and three on the bottom row (
 3 path/image3.png
 4 path/image4.png
 5 path/image5.png
-- homographies
-0 1
-1 2
-0 3
-3 4
-1 4
-4 5
-2 5
 - rows
 0 1 2
 3 4 5
@@ -87,6 +78,6 @@ For stitching six images with three on the top row and three on the bottom row (
 Notes
 -----
 Ensure all paths in the images section are correct and point to the respective images.
-Each section (images, homographies, rows) must start with a - followed by the section name.
-The list is case-sensitive, and section names should be written exactly as shown (images, homographies, rows).
+Each section (images, rows) must start with a - followed by the section name.
+The list is case-sensitive, and section names should be written exactly as shown (images, rows).
 You can find simple example in test_data directory
