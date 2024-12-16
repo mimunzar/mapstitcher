@@ -358,10 +358,12 @@ class ImageStitcher:
 
 def parse_list_file(config_file, silent=False):
     images = []
-    h_pairs = []
     rows = []
 
-    if not args.silent:
+    # Extract the base path from config_file
+    base_path = os.path.dirname(config_file)
+
+    if not silent:
         print(f"Loading config file: {config_file}")
     if not os.path.isfile(config_file):
         raise FileNotFoundError(f"Config file {config_file} not found.")
@@ -369,7 +371,7 @@ def parse_list_file(config_file, silent=False):
     with open(config_file, 'r') as f:
         lines = f.readlines()
 
-    section = None  # None initially, then 'images', 'homographies', or 'pairs'
+    section = None  # None initially, then 'images' or 'rows'
 
     for line in lines:
         line = line.strip()
@@ -380,8 +382,6 @@ def parse_list_file(config_file, silent=False):
             # Determine the section based on the current line
             if 'images' in line:
                 section = 'images'
-            #elif 'homographies' in line:
-            #    section = 'homographies'
             elif 'rows' in line:
                 section = 'rows'
             continue
@@ -389,10 +389,9 @@ def parse_list_file(config_file, silent=False):
         # Parse based on the current section
         if section == 'images':
             index, path = line.split(maxsplit=1)
-            images.append(path)
-        #elif section == 'homographies':
-        #    indices = tuple(map(int, line.split()))
-        #    h_pairs.append(indices)
+            # Append the full path
+            full_path = os.path.join(base_path, path)
+            images.append(full_path)
         elif section == 'rows':
             indices = tuple(map(int, line.split()))
             rows.append(indices)
