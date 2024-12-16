@@ -228,6 +228,11 @@ class ImageStitcher:
                 result_canvas = np.where(image1_warp > 0, image1_warp, result_canvas)
             image2_warp = self.hard_border_image(image2_warp, isect_center, -isect_normal)
             result_canvas = np.where(image2_warp > 0, image2_warp, result_canvas)
+            '''cv2.namedWindow('img', cv2. WINDOW_NORMAL)
+            cv2.resizeWindow('img', 1000, 1000)
+            cv2.imshow('img', result_canvas)
+            cv2.waitKey(0)
+            continue'''
 
             mask_full = np.ones((img2.shape[0], img2.shape[1]), dtype=np.float32)
             mask_full = cv2.warpPerspective(mask_full, H2, (canvas_width, canvas_height), flags=cv2.INTER_NEAREST)
@@ -490,20 +495,33 @@ if '__main__' == __name__:
         homographies.append(np.eye(3))
     corresponding_points = []
     
+    image_in = [h_pairs[0][0]]
     for i, pair in enumerate(h_pairs):
         # compute homography
-        H_data = homography(read_image(images[pair[0]]), read_image(images[pair[1]]))
-        
-        # update homographies
-        homographies[pair[1]] = np.dot(homographies[pair[0]], H_data[0])
-        # store
-        corresponding_points.append({
-            'pair': pair,
-            'points': H_data[1]
-        })
+        if pair[0] in image_in:
+            H_data = homography(read_image(images[pair[0]]), read_image(images[pair[1]]))
+            # update homographies
+            homographies[pair[1]] = np.dot(homographies[pair[0]], H_data[0])
+            # store
+            corresponding_points.append({
+                'pair': pair,
+                'points': H_data[1]
+            })
+            image_in.append(pair[1])
+        else:
+            H_data = homography(read_image(images[pair[1]]), read_image(images[pair[0]]))
+            # update homographies
+            homographies[pair[0]] = np.dot(homographies[pair[1]], H_data[0])
+            # store
+            corresponding_points.append({
+                'pair': [pair[1], pair[0]],
+                'points': H_data[1]
+            })
+            image_in.append(pair[0])
 
     optimizer = HomographyOptimizer(max_matches, args.optimization_model, silent=args.silent)
     h_optimized = optimizer.optimize(h_pairs, homographies, corresponding_points)
+    #h_optimized = homographies
 
     #homographies = []
     #for image in images:

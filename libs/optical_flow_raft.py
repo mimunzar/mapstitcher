@@ -45,8 +45,8 @@ class OpticalFlow_RAFT:
         # load the RAFT model
 
     def compute_optical_flow_tiled(self, img1, img2, orientation='horizontal', vram=8.0):
-        # 1200 * 1200 per 8GB of VRAM (maybe more, but i have no means of testing)
-        maxpix = (int)(1200 * 1200 * vram / 8.0)
+        # 1150 * 1150 per 8GB of VRAM (maybe more, but i have no means of testing)
+        maxpix = (int)(1150 * 1150 * vram / 8.0)
         if orientation == 'vertical':
             patch_y = maxpix // img1.shape[1]
             patch_x = img1.shape[1]

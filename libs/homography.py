@@ -66,11 +66,11 @@ def make_homography_with_downscaling(max_size, device, debug):
         small0, scale0     = resize_image(image0)
         small1, scale1     = resize_image(image1)
         H     , [kp0, kp1] = homography(small0, small1)
-        #inv_scale0         = 1 / scale0
-        #return [H * array([[     1,      1, inv_scale0],
-        #                   [     1,      1, inv_scale0],
-        #                   [scale0, scale0,          1]]),
-        #        [kp0 * inv_scale0, kp1 * 1 / scale1]]
+        '''inv_scale0         = 1 / scale0
+        return [H * array([[     1,      1, inv_scale0],
+                           [     1,      1, inv_scale0],
+                           [scale0, scale0,          1]]),
+                [kp0 * inv_scale0, kp1 * 1 / scale1]]'''
         scale_matrix0 = array([[1 / scale0, 0,         0],
                                 [0,         1 / scale0, 0],
                                 [0,         0,         1]])
