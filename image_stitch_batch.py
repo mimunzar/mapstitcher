@@ -475,8 +475,11 @@ if '__main__' == __name__:
         print("Subsample Flow:", args.subsample_flow)
     
     # create list of homographies
+    side_size = (int)(math.sqrt((1000 * 1000) * (args.vram_size / 8.0)))
+    if not args.silent:
+        print("Homography size:", side_size)
     homography = make_homography_with_downscaling(**{  # Expects following argparse arguments.
-        'max_size': int(1000 * (args.vram_size / 8.0)),
+        'max_size': side_size,
         'device'  : 'cuda',
         'debug'   : False})
     
