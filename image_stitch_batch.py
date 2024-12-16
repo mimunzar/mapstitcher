@@ -476,7 +476,7 @@ if '__main__' == __name__:
     
     # create list of homographies
     homography = make_homography_with_downscaling(**{  # Expects following argparse arguments.
-        'max_size': 1000, # Homography is computed on images of this size
+        'max_size': int(1000 * (args.vram_size / 8.0)),
         'device'  : 'cuda',
         'debug'   : False})
     
