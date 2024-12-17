@@ -450,6 +450,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Image Stitcher")
     parser.add_argument('--list', required=True, help="File and processing list")
     parser.add_argument('--optimization-model', required=False, default='affine', help="Optimization model homography or affine")
+    parser.add_argument('--matching-algorithm', required=False, default='sift', help="Matching algorithm loftr or sift")
+    parser.add_argument('--loftr-model', required=False, default='outdoor', help="Model for LOFTR - outdoor or indoor")
     parser.add_argument('--flow-alg', required=False, default='raft', help="Optical Flow algorithm cv or raft")
     parser.add_argument('--subsample-flow', default=2.0, type=float, help="Subsample flow")
     parser.add_argument('--vram-size', default=8.0, type=float, help="GPU VRAM size in GB")
@@ -475,17 +477,34 @@ if '__main__' == __name__:
         print("Pairs List:", h_pairs)
         print("Rows List:", rows)
         print("Optimization Model:", args.optimization_model)
+        print("Matching Algorithm:", args.matching_algorithm)
+        print("LOFTR Model:", args.loftr_model)
         print("Flow Algorithm:", args.flow_alg)
         print("Subsample Flow:", args.subsample_flow)
     
     # create list of homographies
-    side_size = (int)(math.sqrt((1000 * 1000) * (args.vram_size / 8.0)))
-    if not args.silent:
-        print("Homography size:", side_size)
-    homography = make_homography_with_downscaling(**{  # Expects following argparse arguments.
-        'max_size': side_size,
-        'device'  : 'cuda',
-        'debug'   : False})
+    if args.matching_algorithm == 'loftr':
+        side_size = (int)(math.sqrt((1000 * 1000) * (args.vram_size / 8.0)))
+    else:
+        side_size = 3000
+    if args.optimization_model == 'homography':
+        if not args.silent:
+            print("Homography size:", side_size)
+        transform = make_homography_with_downscaling(**{  # Expects following argparse arguments.
+            'max_size': side_size,
+            'device'  : 'cuda',
+            'model'   : args.loftr_model,
+            'algorithm': args.matching_algorithm,
+            'debug'   : False})
+    else:
+        if not args.silent:
+            print("Affine size:", side_size)
+        transform = make_affine_transform_with_downscaling(**{  # Expects following argparse arguments.
+            'max_size': side_size,
+            'device'  : 'cuda',
+            'model'   : args.loftr_model,
+            'algorithm': args.matching_algorithm,
+            'debug'   : False})
     
     # this is a workaround to avoid CUDA memory allocation errors
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -496,31 +515,32 @@ if '__main__' == __name__:
     corresponding_points = []
     
     image_in = [h_pairs[0][0]]
-    for i, pair in enumerate(h_pairs):
-        # compute homography
+    connectred_list = []
+    # create connected pairs list
+    while h_pairs != []:
+        pair = h_pairs.pop(0)
         if pair[0] in image_in:
-            H_data = homography(read_image(images[pair[0]]), read_image(images[pair[1]]))
-            # update homographies
-            homographies[pair[1]] = np.dot(homographies[pair[0]], H_data[0])
-            # store
-            corresponding_points.append({
-                'pair': pair,
-                'points': H_data[1]
-            })
+            connectred_list.append(pair)
             image_in.append(pair[1])
-        else:
-            H_data = homography(read_image(images[pair[1]]), read_image(images[pair[0]]))
-            # update homographies
-            homographies[pair[0]] = np.dot(homographies[pair[1]], H_data[0])
-            # store
-            corresponding_points.append({
-                'pair': [pair[1], pair[0]],
-                'points': H_data[1]
-            })
+        elif pair[1] in image_in:
+            connectred_list.append([pair[1], pair[0]])
             image_in.append(pair[0])
+        else:
+            h_pairs.append(pair)
+    print("Connected List:", connectred_list)
+
+    for i, pair in enumerate(connectred_list):
+        H_data = transform(read_image(images[pair[0]]), read_image(images[pair[1]]))
+        homographies[pair[1]] = np.dot(homographies[pair[0]], H_data[0])
+        # update homographies
+        # store
+        corresponding_points.append({
+            'pair': pair,
+            'points': H_data[1]
+        })
 
     optimizer = HomographyOptimizer(max_matches, args.optimization_model, silent=args.silent)
-    h_optimized = optimizer.optimize(h_pairs, homographies, corresponding_points)
+    h_optimized = optimizer.optimize(connectred_list, homographies, corresponding_points)
     #h_optimized = homographies
 
     #homographies = []
