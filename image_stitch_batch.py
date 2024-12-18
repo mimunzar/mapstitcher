@@ -19,6 +19,8 @@ from libs.homography import *
 
 import matplotlib.pyplot as plt
 
+import glymur
+
 class ImageStitcher:
     def __init__(self, subsample=1.0, flow_alg='cv', vram=8.0, debug=False, silent=False):
         #self.optical_flow = OpticalFlow_RAFT()
@@ -457,7 +459,7 @@ def parse_args():
     parser.add_argument('--vram-size', default=8.0, type=float, help="GPU VRAM size in GB")
     parser.add_argument('--max-matches', default=800, type=int, help="Maximum number of matches per image pair (for optimization)")
     parser.add_argument('--debug', action='store_true', help="Debug mode")
-    parser.add_argument('--output', default='result.png', help="Output file")
+    parser.add_argument('--output', default='result.jp2', help="Output file")
     parser.add_argument('--silent', action='store_true', help="Silent mode")
     return parser.parse_args()
 
@@ -486,7 +488,7 @@ if '__main__' == __name__:
     if args.matching_algorithm == 'loftr':
         side_size = (int)(math.sqrt((1000 * 1000) * (args.vram_size / 8.0)))
     else:
-        side_size = 3000
+        side_size = 1500
     if args.optimization_model == 'homography':
         if not args.silent:
             print("Homography size:", side_size)
@@ -576,4 +578,14 @@ if '__main__' == __name__:
     # save result
     if not args.silent:
         print("Saving result to", args.output)
-    cv2.imwrite(args.output, result_canvas)
+
+    # check suffix of the output file
+    suffix = args.output.split('.')[-1]
+    if suffix == 'jp2':
+        # write lossless jp2
+        result_canvas = cv2.cvtColor(result_canvas, cv2.COLOR_BGR2RGB)
+        if result_canvas.dtype != np.uint8:
+            result_canvas = (result_canvas / 256).astype(np.uint8)
+        glymur.Jp2k(args.output, data=result_canvas, psnr=[0])
+    else:
+        cv2.imwrite(args.output, result_canvas)

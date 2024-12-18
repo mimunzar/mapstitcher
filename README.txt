@@ -32,7 +32,7 @@ Parameters:
 --subsample-flow 	optional, default=2.0, Subsample flow
 --vram-size		optional, default=8.0, GPU VRAM size in GB, more can speed-up raft optflow computation 
 --max-matches		optional, default=800, Maximum number of matches per image pair (for optimization)
---output		optional, default='result.png', Output file
+--output		optional, default='result.jp2', Output file
 --silent		optional, default=False, Kill any console output
 
 Input List Format
