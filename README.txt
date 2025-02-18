@@ -26,7 +26,7 @@ list.txt contains the configuration for images, and stitching rows. Ensure it fo
 Parameters:
 --list 			required, File and processing list
 --optimization-model 	optional, default='affine', Optimization model homography or affine
---matching-algorithm optional, default='sift', Matching algorithm loftr or sift
+--matching-algorithm optional, default='loftr', Matching algorithm loftr or sift
 --loftr-model optional, default='outdoor', Model for LOFTR - outdoor or indoor
 --flow-alg 		optional, default='raft', Optical Flow algorithm cv or raft
 --subsample-flow 	optional, default=2.0, Subsample flow
