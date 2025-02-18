@@ -452,7 +452,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Image Stitcher")
     parser.add_argument('--list', required=True, help="File and processing list")
     parser.add_argument('--optimization-model', required=False, default='affine', help="Optimization model homography or affine")
-    parser.add_argument('--matching-algorithm', required=False, default='sift', help="Matching algorithm loftr or sift")
+    parser.add_argument('--matching-algorithm', required=False, default='loftr', help="Matching algorithm loftr or sift")
     parser.add_argument('--loftr-model', required=False, default='outdoor', help="Model for LOFTR - outdoor or indoor")
     parser.add_argument('--flow-alg', required=False, default='raft', help="Optical Flow algorithm cv or raft")
     parser.add_argument('--subsample-flow', default=2.0, type=float, help="Subsample flow")
