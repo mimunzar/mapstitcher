@@ -96,7 +96,6 @@ class ImageStitcher:
 
         nx, ny = normal
         px, py = point
-        #print(nx, ny, px, py)
         
         # Compute the signed distance from the line defined by the point and normal
         signed_distance = nx * (x - px) + ny * (y - py)
@@ -116,37 +115,14 @@ class ImageStitcher:
         right_side = signed_distance >= 0
 
         # Square the values of the blending mask on the left side for slower easing
-        #blending_mask_sin[left_side] = blending_mask_sin[left_side] ** 2
-        #blending_mask_sin[left_side] = 0
         blending_mask_sin = 1.0 - (abs(signed_distance) / max_abs_distance) * 5.0
         blending_mask_sin[right_side] = 1
         blending_mask_sin = np.clip(blending_mask_sin, 0, 1)
         blending_mask_sin = blending_mask_sin * mask
 
         blending_mask_expanded = np.repeat(blending_mask_sin[:, :, np.newaxis], 3, axis=2)
-        #mask_overlap_expanded = np.repeat(self.mask_overlap[:, :, np.newaxis], 3, axis=2)
 
-        #cv2.namedWindow('img', cv2. WINDOW_NORMAL)
-        #cv2.resizeWindow('img', 800, 800)
-        #cv2.imshow('img', blending_mask_expanded)
-        #cv2.waitKey(0)
-
-        soft_image = (img1 * (1 - blending_mask_expanded) + img2 * blending_mask_expanded).astype(np.uint8)
-
-        '''cv2.namedWindow('img', cv2. WINDOW_NORMAL)
-        cv2.resizeWindow('img', 1000, 1000)
-        while True:
-            cv2.imshow('img', img1)
-            if cv2.waitKey(0) == ord('q'):
-                break
-
-            cv2.imshow('img', img2)
-            if cv2.waitKey(0) == ord('q'):
-                break
-
-            cv2.imshow('img', soft_image)
-            if cv2.waitKey(0) == ord('q'):
-                break'''
+        soft_image = (img1 * (1 - blending_mask_expanded) + img2 * blending_mask_expanded)
 
         return soft_image
 
@@ -188,7 +164,7 @@ class ImageStitcher:
         # create canvas
         canvas_width = math.ceil(max_x) - math.floor(min_x)
         canvas_height = math.ceil(max_y) - math.floor(min_y)
-        result_canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
+        result_canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.float32)
 
         for i in range(len(images)):
             if i == len(images) - 1:
@@ -214,27 +190,11 @@ class ImageStitcher:
             overlap1 = image1_warp[int(isect_bb[1]):int(isect_bb[3]), int(isect_bb[0]):int(isect_bb[2])]
             overlap2 = image2_warp[int(isect_bb[1]):int(isect_bb[3]), int(isect_bb[0]):int(isect_bb[2])]
 
-            #cv2.namedWindow('img', cv2. WINDOW_NORMAL)
-            #cv2.resizeWindow('img', 1000, 1000)
-            #while True:
-            #    cv2.imshow('img', overlap1)
-            #    if cv2.waitKey(0) == ord('q'):
-            #        break
-
-            #    cv2.imshow('img', overlap2)
-            #    if cv2.waitKey(0) == ord('q'):
-            #        break
-
             if not image_placed[i]:
                 image1_warp = self.hard_border_image(image1_warp, isect_center, isect_normal)
                 result_canvas = np.where(image1_warp > 0, image1_warp, result_canvas)
             image2_warp = self.hard_border_image(image2_warp, isect_center, -isect_normal)
             result_canvas = np.where(image2_warp > 0, image2_warp, result_canvas)
-            '''cv2.namedWindow('img', cv2. WINDOW_NORMAL)
-            cv2.resizeWindow('img', 1000, 1000)
-            cv2.imshow('img', result_canvas)
-            cv2.waitKey(0)
-            continue'''
 
             mask_full = np.ones((img2.shape[0], img2.shape[1]), dtype=np.float32)
             mask_full = cv2.warpPerspective(mask_full, H2, (canvas_width, canvas_height), flags=cv2.INTER_NEAREST)
@@ -242,16 +202,11 @@ class ImageStitcher:
 
             midpt = [isect_center[0] - isect_bb[0], isect_center[1] - isect_bb[1]]
 
-            # opverlaps to GPU, cuda, tensor
-            #print("Before processing:")
-            #print(f"Allocated: {torch.cuda.memory_allocated() / 1e6} MB")
-            #print(f"Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
-
             if self.flow_alg == 'raft':
                 with torch.no_grad():
                     subsample = self.subsample_flow
-                    img1_overlap_sub = overlap1
-                    img2_overlap_sub = overlap2
+                    img1_overlap_sub = (overlap1 * 255.0).astype(np.uint8)
+                    img2_overlap_sub = (overlap2 * 255.0).astype(np.uint8)
 
                     # subsample flow
                     if subsample > 0.0 and subsample != 1.0:
@@ -292,13 +247,7 @@ class ImageStitcher:
                 flow = flow.transpose(2, 0, 1)
 
             img_mid, mask_overlap = self.remap_image_with_flow(overlap2, flow, isect_normal, midpt, mask_overlap)
-            #img_mid = (img_mid.squeeze(0).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-
-            #print("After processing:")
-            #print(f"Allocated: {torch.cuda.memory_allocated() / 1e6} MB")
-            #print(f"Reserved: {torch.cuda.memory_reserved() / 1e6} MB")
-
-            #print(torch.cuda.memory_summary(device='cuda:0', abbreviated=False))
+            img_mid2, mask_overlap2 = self.remap_image_with_flow(overlap1, -flow, isect_normal, midpt, mask_overlap)
 
             # blend the images
             overlap = result_canvas[int(isect_bb[1]):int(isect_bb[3]), int(isect_bb[0]):int(isect_bb[2])]
@@ -310,11 +259,9 @@ class ImageStitcher:
         return result_canvas, H_offset
 
     def remap_image_with_flow(self, img2_overlap, flow, intersection_normal, point, mask): # todo: for arbitrary image position needs to be changed
-        #img2_overlap_np = img2_overlap.squeeze(0).cpu().numpy()  # Shape: [C, H, W]
         img2_overlap_np = img2_overlap  # Shape: [H, W, C]
-        flow_np = flow#flow.squeeze(0).cpu().numpy()  # Shape: [2, H, W]
+        flow_np = flow
         
-        #img2_overlap_np = img2_overlap_np.transpose(1, 2, 0)  # Shape: [H, W, C]
         flow_np = flow_np.transpose(1, 2, 0)  # Shape: [H, W, 2]
         
         h, w, _ = img2_overlap_np.shape
@@ -343,22 +290,6 @@ class ImageStitcher:
         img2_remapped = cv2.remap(img2_overlap_np, map_x.astype(np.float32), map_y.astype(np.float32), interpolation=cv2.INTER_LINEAR)
         mask = cv2.remap(mask, map_x.astype(np.float32), map_y.astype(np.float32), interpolation=cv2.INTER_NEAREST)
 
-        #cv2.namedWindow('img', cv2. WINDOW_NORMAL)
-        #cv2.resizeWindow('img', 800, 800)
-        #while True:
-        #    cv2.imshow('img', img2_overlap_np)
-        #    if cv2.waitKey(0) == ord('q'):
-        #        break
-
-        #    cv2.imshow('img', img2_remapped)
-        #    if cv2.waitKey(0) == ord('q'):
-        #        break
-            
-        #    cv2.imshow('img', mask)
-        #    if cv2.waitKey(0) == ord('q'):
-        #        break
-        
-        #img2_remapped_tensor_np = (img2_remapped * 255).astype(np.uint8)
         img2_remapped_tensor_np = img2_remapped
         
         return img2_remapped_tensor_np, mask
@@ -545,16 +476,9 @@ if '__main__' == __name__:
     h_optimized = optimizer.optimize(connectred_list, homographies, corresponding_points)
     #h_optimized = homographies
 
-    #homographies = []
-    #for image in images:
-    #    homographies.append(np.eye(3))
-    
-    #for i, pair in enumerate(h_pairs):
-    #    homographies[pair[1]] = np.dot(homographies[pair[0]], h_optimized[i])
-
     images_loaded = []
     for image in images:
-        images_loaded.append(cv2.imread(image))
+        images_loaded.append(cv2.imread(image).astype(np.float32) / 255.0)
     # create result image based on homographies
 
     image_stitcher = ImageStitcher(args.subsample_flow, args.flow_alg, args.vram_size, args.debug, silent=args.silent)
@@ -583,9 +507,10 @@ if '__main__' == __name__:
     suffix = args.output.split('.')[-1]
     if suffix == 'jp2':
         # write lossless jp2
+        result_canvas = result_canvas * 255.0
         result_canvas = cv2.cvtColor(result_canvas, cv2.COLOR_BGR2RGB)
         if result_canvas.dtype != np.uint8:
-            result_canvas = (result_canvas / 256).astype(np.uint8)
+            result_canvas = (result_canvas * 255.0).astype(np.uint8)
         glymur.Jp2k(args.output, data=result_canvas, psnr=[0])
     else:
-        cv2.imwrite(args.output, result_canvas)
+        cv2.imwrite(args.output, result_canvas * 255.0)

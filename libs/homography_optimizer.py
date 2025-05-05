@@ -1,5 +1,9 @@
 import numpy as np
 from scipy.optimize import minimize
+import torch
+import torch.optim as optim
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def reprojection_error(h_chain, points1, points2):
     points1_h = np.hstack([points1, np.ones((points1.shape[0], 1))])  # Shape: (n, 3)
@@ -105,6 +109,58 @@ def objective_affine(affines_flat, correspondences_flat):
 
     return total_error
 
+def objective_affine_torch(affines_flat, correspondences_flat):
+    # Reshape the flattened parameters into a list of [s, theta, tx, ty]
+    num_affines = len(affines_flat) // 4
+    affines = affines_flat.view(num_affines, 4)  # Shape: (num_affines, 4)
+
+    # Extract s, R, t
+    s = affines[:, 0]  # Scaling
+    theta = affines[:, 1]  # Rotation
+    tx = affines[:, 2]  # Translation X
+    ty = affines[:, 3]  # Translation Y
+
+    # Compute rotation matrices
+    cos_theta = torch.cos(theta)
+    sin_theta = torch.sin(theta)
+    rotation_matrices = torch.stack([
+        torch.stack([cos_theta, -sin_theta], dim=-1),
+        torch.stack([sin_theta,  cos_theta], dim=-1)
+    ], dim=-2)  # Shape: (num_affines, 2, 2)
+
+    # Compute affine matrices
+    affine_matrices = s[:, None, None] * rotation_matrices  # Shape: (num_affines, 2, 2)
+
+    # Stack translations
+    translations = torch.stack([tx, ty], dim=-1)  # Shape: (num_affines, 2)
+
+    # Extract correspondences
+    p = torch.stack([torch.tensor(c[0], dtype=torch.float32, device=device) for c in correspondences_flat])  # (num_correspondences, 2)
+    q = torch.stack([torch.tensor(c[1], dtype=torch.float32, device=device) for c in correspondences_flat])  # (num_correspondences, 2)
+    aff_idx1 = torch.tensor([c[2] for c in correspondences_flat], dtype=torch.long, device=device)  # (num_correspondences,)
+    aff_idx2 = torch.tensor([c[3] for c in correspondences_flat], dtype=torch.long, device=device)  # (num_correspondences,)
+
+    A1 = affine_matrices[aff_idx1]  # (num_correspondences, 2, 2)
+    T1 = translations[aff_idx1]    # (num_correspondences, 2)
+    A2 = affine_matrices[aff_idx2]  # (num_correspondences, 2, 2)
+    T2 = translations[aff_idx2]    # (num_correspondences, 2)
+
+    # Compute inverse of A1
+    A1_inv = torch.linalg.inv(A1)  # (num_correspondences, 2, 2)
+
+    # Compute chained transformation
+    A_chain = torch.einsum('nij,njk->nik', A2, A1_inv)  # p.dot(A2, inv(A1))
+    T_chain = T2 - torch.einsum('nij,nj->ni', A_chain, T1)  # translation
+
+    # Apply transformation to p
+    p_transformed = torch.einsum('nij,nj->ni', A_chain, p) + T_chain  # (num_correspondences, 2)
+
+    # Compute reprojection errors
+    errors = torch.norm(p_transformed - q, dim=1)  # (num_correspondences,)
+    total_error = torch.sum(errors)  # Scalar loss
+
+    return total_error
+
 class HomographyOptimizer:
     def __init__(self, max_matches=200, optimization_model='homography', silent=False):
         self.max_matches = max_matches
@@ -113,6 +169,7 @@ class HomographyOptimizer:
 
     def optimize(self, pairs, homographies, correspondences):
         if self.optimization_model == 'affine':
+            #return self.optimize_affine_torch(pairs, homographies, correspondences)
             return self.optimize_affine(pairs, homographies, correspondences)
         elif self.optimization_model == 'homography':
             return self.optimize_homography(pairs, homographies, correspondences)
@@ -189,6 +246,69 @@ class HomographyOptimizer:
         affine_matrices_normalized = [A @ A_fixed_inv for A in affine_matrices]
 
         # Return the normalized affine matrices
+        return affine_matrices_normalized
+
+    def optimize_affine_torch(self, pairs, homographies, correspondences):
+        print("Optimizing affine with PyTorch (GPU)")
+
+        # Extract initial affine transformations
+        affines = [extract_initial_affine_from_homography(H) for H in homographies]
+        affines_flat = torch.tensor(affines, dtype=torch.float32, device=device, requires_grad=True).flatten()
+
+        # Flatten correspondences
+        correspondences_flat = []
+        for correspondence in correspondences:
+            pair = correspondence['pair']
+            points = correspondence['points']
+            affine1 = pair[0]
+            affine2 = pair[1]
+            points1 = points[0]
+            points2 = points[1]
+
+            for p, q in zip(points1, points2):
+                correspondences_flat.append((p, q, affine1, affine2))
+
+        # Subsample correspondences
+        subsample_factor = max(1, len(correspondences_flat) // (self.max_matches * len(homographies)))
+        correspondences_flat = correspondences_flat[::subsample_factor]
+
+        print("Initial error:", objective_affine_torch(affines_flat, correspondences_flat).item())
+
+        # Define optimizer (LBFGS for second-order optimization)
+        #optimizer = torch.optim.LBFGS([affines_flat], max_iter=100, tolerance_grad=1e-5, tolerance_change=1e-9)
+        optimizer = torch.optim.LBFGS([affines_flat.clone().detach().requires_grad_(True)], max_iter=100)
+
+        # Define closure function
+        def closure():
+            optimizer.zero_grad()  # Reset gradients
+            loss = objective_affine_torch(affines_flat, correspondences_flat)
+            loss.backward()  # Compute gradients
+            return loss
+
+        # Run optimization
+        optimizer.step(closure)
+
+        print("Final error:", objective_affine_torch(affines_flat, correspondences_flat).item())
+
+        # Convert to NumPy
+        optimized_affines = affines_flat.detach().cpu().numpy().reshape((len(affines), 4))
+        affine_matrices = []
+
+        for s, theta, tx, ty in optimized_affines:
+            cos_theta = np.cos(theta)
+            sin_theta = np.sin(theta)
+            affine_matrix = np.array([
+                [s * cos_theta, -s * sin_theta, tx],
+                [s * sin_theta,  s * cos_theta, ty],
+                [0,              0,             1]
+            ])
+            affine_matrices.append(affine_matrix)
+
+        # Normalize affine matrices
+        A_fixed = affine_matrices[pairs[0][0]]
+        A_fixed_inv = np.linalg.inv(A_fixed)
+        affine_matrices_normalized = [A @ A_fixed_inv for A in affine_matrices]
+
         return affine_matrices_normalized
 
     def optimize_homography(self, pairs, homographies, correspondences):
