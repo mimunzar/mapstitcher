@@ -4,6 +4,7 @@ import cv2
 import argparse
 import math
 import gc
+import subprocess
 
 import torch
 import torch.nn.functional as F2
@@ -18,8 +19,6 @@ from libs.util import *
 from libs.homography import *
 
 import matplotlib.pyplot as plt
-
-import glymur
 
 class ImageStitcher:
     def __init__(self, subsample=1.0, flow_alg='cv', vram=8.0, debug=False, silent=False):
@@ -294,6 +293,42 @@ class ImageStitcher:
         
         return img2_remapped_tensor_np, mask
 
+def parse_folder(path, silent=False):
+    # get all image files in the folder [jpg, png, tiff, jp2]
+    image_files = []
+    for root, dirs, files in os.walk(path):
+        for file in files:
+            if file.endswith(('.jpg', '.png', '.tiff', '.jp2')):
+                image_files.append(os.path.join(root, file))
+    if not silent:
+        print(f"Found {len(image_files)} images in {path}")
+
+    # extract coordinates from the file names in form: name_X_Y.extension
+    indices = []
+    for image_file in image_files:
+        file_name = os.path.basename(image_file)
+        name, ext = os.path.splitext(file_name)
+        coords = name.split('_')
+        if len(coords) == 3:
+            x, y = int(coords[1]), int(coords[2])
+            indices.append((x, y))
+        else:
+            raise ValueError(f"Invalid file name format: {file_name}")
+
+    # transform indices to a list of rows
+    rows = []
+    max_x = max([x for x, y in indices])
+    max_y = max([y for x, y in indices])
+    for y in range(max_y + 1):
+        row = []
+        for x in range(max_x + 1):
+            if (x, y) in indices:
+                row.append(indices.index((x, y)))
+            else:
+                row.append('X')
+        rows.append(row)
+    return image_files, rows
+
 def parse_list_file(config_file, silent=False):
     images = []
     rows = []
@@ -381,7 +416,8 @@ def parse_args():
     Parse command line arguments.
     """
     parser = argparse.ArgumentParser(description="Image Stitcher")
-    parser.add_argument('--list', required=True, help="File and processing list")
+    parser.add_argument('--path', required=False, help="Path to name-codes images folder")
+    parser.add_argument('--list', required=False, help="File and processing list")
     parser.add_argument('--optimization-model', required=False, default='affine', help="Optimization model homography or affine")
     parser.add_argument('--matching-algorithm', required=False, default='loftr', help="Matching algorithm loftr or sift")
     parser.add_argument('--loftr-model', required=False, default='outdoor', help="Model for LOFTR - outdoor or indoor")
@@ -401,7 +437,18 @@ if '__main__' == __name__:
     args = parse_args()
     max_matches = args.max_matches
 
-    images, rows = parse_list_file(args.list, args.silent)
+    # check if path is set or list is set
+    if args.path is None and args.list is None:
+        raise ValueError("Either --path or --list must be set.")
+
+    # if list set
+    if args.list is not None:
+        images, rows = parse_list_file(args.list, args.silent)
+
+    # if path set
+    if args.path is not None:
+        images, rows = parse_folder(args.path, args.silent)
+
     h_pairs = get_all_neighbours(rows)
 
     # Output for debugging
@@ -504,13 +551,33 @@ if '__main__' == __name__:
         print("Saving result to", args.output)
 
     # check suffix of the output file
-    suffix = args.output.split('.')[-1]
+    prefix = args.output.rsplit('.', 1)[0]
+    suffix = args.output.rsplit('.', 1)[-1].lower()
+
+    # saving as JP2, convert to TIFF first and call opj_compress
     if suffix == 'jp2':
-        # write lossless jp2
-        result_canvas = result_canvas * 255.0
-        result_canvas = cv2.cvtColor(result_canvas, cv2.COLOR_BGR2RGB)
-        if result_canvas.dtype != np.uint8:
-            result_canvas = (result_canvas * 255.0).astype(np.uint8)
-        glymur.Jp2k(args.output, data=result_canvas, psnr=[0])
+        tif_path = f'{prefix}_tmp.tif'
+        cv2.imwrite(tif_path, (result_canvas * 255.0).astype(np.uint8))
+
+        cmd = [
+            'opj_compress',
+            '-i', tif_path,
+            '-o', args.output,
+            '-t', '4069,4096',
+            '-p', 'RPCL',
+            '-r', '1',
+            '-c', '[256,256]',
+            '-TLM',
+            '-M', '1',
+            '-SOP',
+            '-EPH'
+        ]
+
+        try:
+            subprocess.run(cmd, check=True)
+            os.remove(tif_path)
+        except subprocess.CalledProcessError as e:
+            print(f"Error: opj_compress failed with exit code {e.returncode}")
+            raise
     else:
-        cv2.imwrite(args.output, result_canvas * 255.0)
+        cv2.imwrite(args.output, (result_canvas * 255.0).astype(np.uint8))

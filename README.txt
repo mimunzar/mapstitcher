@@ -11,7 +11,10 @@ In command line run:
   $ python3 -m venv ${PATH_TO_VENV}
   $ source ${PATH_TO_VENV}/bin/activate
   $ pip install --upgrade pip && pip install -r requirements.txt
-
+  
+  # additionaly install OpenJPEG-tools for saving as .jp2
+  $ sudo apt update
+  $ sudo apt install libopenjp2-tools
 
 Running
 -------
@@ -32,7 +35,7 @@ Parameters:
 --subsample-flow 	optional, default=2.0, Subsample flow
 --vram-size		optional, default=8.0, GPU VRAM size in GB, more can speed-up raft optflow computation 
 --max-matches		optional, default=800, Maximum number of matches per image pair (for optimization)
---output		optional, default='result.jp2', Output file
+--output		optional, default='result.jp2', Output file, if .jp2 extension is used, openjp2-tools will be used to convert the file (no compression) 
 --silent		optional, default=False, Kill any console output
 
 Input List Format
