@@ -1,0 +1,30 @@
+FROM python:3.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
+
+# dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libopenjp2-tools \
+    git \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# mapstitcher
+WORKDIR /app
+RUN git clone https://github.com/mimunzar/mapstitcher.git \
+    && cd mapstitcher \
+    && git checkout 8872fb4e02c4417ba41ab0e291d276b49d8415bb
+    
+# python dependencies
+WORKDIR /app/mapstitcher
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+COPY entrypoint_oneshot.sh /app/entrypoint_oneshot.sh
+COPY entrypoint_service.sh /app/entrypoint_service.sh
+RUN chmod +x /app/entrypoint_oneshot.sh /app/entrypoint_service.sh
+
+# run
+CMD ["python3", "image_stitch_batch.py", "--path", "/data/", "--output", "/data/stitched.jp2"]
