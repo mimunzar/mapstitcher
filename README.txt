@@ -27,7 +27,8 @@ python image_stitch_batch.py --list list.txt
 list.txt contains the configuration for images, and stitching rows. Ensure it follows the required format detailed below.
 
 Parameters:
---list 			required, File and processing list
+--list 			optional, File and processing list
+--path 			optional, Path to folder with name-coded images
 --optimization-model 	optional, default='affine', Optimization model homography or affine
 --matching-algorithm optional, default='loftr', Matching algorithm loftr or sift
 --loftr-model optional, default='outdoor', Model for LOFTR - outdoor or indoor
@@ -37,6 +38,22 @@ Parameters:
 --max-matches		optional, default=800, Maximum number of matches per image pair (for optimization)
 --output		optional, default='result.jp2', Output file, if .jp2 extension is used, openjp2-tools will be used to convert the file (no compression) 
 --silent		optional, default=False, Kill any console output
+
+Input As Name-Coded Files
+-------------------------
+The input directory can contain any number of name-position coded images.
+The program will create neighbor pairs from the file names. For example directory can contain files:
+image0_0_0.png
+image1_0_1.png
+image2_0_2.png
+image3_1_0.png
+image4_1_1.png
+image5_1_2.png
+
+where the first index represents row and the second index represents column.
+So the intended image configuration is as follows:
+image0 image1 image2
+image3 image4 image5
 
 Input List Format
 -----------------
@@ -57,8 +74,8 @@ where
 
 'rows' section defines the structure of the image stitching. Each line represents a row of images.
 
-Example Configurations
-----------------------
+Example Input List Configurations
+---------------------------------
 For stitching four images left-to-right in a single row:
 - images
 0 path/image0.png
