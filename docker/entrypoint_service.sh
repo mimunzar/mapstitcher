@@ -20,13 +20,15 @@ while true; do
 
             input_path="$INPUT_DIR/$base"
             output_file="${base}.jp2"
+            log_file="${output_file%.*}.txt"
 
             echo "Processing: $input_path"
             python3 image_stitch_batch.py \
               --path "$input_path" \
               --output "$OUTPUT_DIR/$output_file" \
               --matching-algorithm "$MATCHING_ALGORITHM" \
-              --vram-size "$VRAM_SIZE"
+              --vram-size "$VRAM_SIZE" \
+              2>&1 | tee "$OUTPUT_DIR/$log_file"
 
             # mark
             mv "$input_path" "${input_path}_done"

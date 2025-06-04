@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 RUN git clone https://github.com/mimunzar/mapstitcher.git \
     && cd mapstitcher \
-    && git checkout 8872fb4e02c4417ba41ab0e291d276b49d8415bb
+    && git checkout c587b6dd9e57566323f145816f6d8c1c13140892
     
 # python dependencies
 WORKDIR /app/mapstitcher
