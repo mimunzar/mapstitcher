@@ -1,10 +1,17 @@
+FROM node:18 as git_stage
+
+WORKDIR /app
+RUN apt-get update && apt-get install -y git && apt-get purge -y --auto-remove  && rm -rf /var/lib/apt/lists/*
+ARG GIT_TAG="v0.0.1"
+RUN git clone --branch v0.0.1 --single-branch https://github.com/mimunzar/mapstitcher.git
+
+########################################################################################
+
 FROM python:3.10-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive
-
-ARG GIT_TAG=v0.0.1
 
 # dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,15 +22,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # mapstitcher
-WORKDIR /app
-RUN git clone --branch ${GIT_TAG} https://github.com/mimunzar/mapstitcher.git \
-    && cd mapstitcher \
-    && git checkout ${GIT_TAG}
-    
-# python dependencies
 WORKDIR /app/mapstitcher
-RUN pip install --upgrade pip && pip install -r requirements.txt
 
+COPY --from=git_stage app/mapstitcher/requirements.txt ./requirements.txt
+RUN pip install -r requirements.txt
+
+COPY --from=git_stage app/mapstitcher ./
 COPY entrypoint_oneshot.sh /app/entrypoint_oneshot.sh
 COPY entrypoint_service.sh /app/entrypoint_service.sh
 RUN chmod +x /app/entrypoint_oneshot.sh /app/entrypoint_service.sh
