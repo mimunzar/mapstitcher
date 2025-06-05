@@ -36,5 +36,5 @@ while true; do
         fi
     done
 
-    sleep 5  # Wait a bit before checking again
+    sleep 5  # wait
 done

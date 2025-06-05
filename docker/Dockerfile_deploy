@@ -4,6 +4,8 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive
 
+ARG GIT_TAG=v0.0.1
+
 # dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libopenjp2-tools \
@@ -14,9 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # mapstitcher
 WORKDIR /app
-RUN git clone https://github.com/mimunzar/mapstitcher.git \
+RUN git clone --branch ${GIT_TAG} https://github.com/mimunzar/mapstitcher.git \
     && cd mapstitcher \
-    && git checkout c587b6dd9e57566323f145816f6d8c1c13140892
+    && git checkout ${GIT_TAG}
     
 # python dependencies
 WORKDIR /app/mapstitcher
